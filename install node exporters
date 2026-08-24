@@ -40,3 +40,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable nodeexporter
 sudo systemctl start nodeexporter
 sudo systemctl status nodeexporter
+
+
+
+
+Install Node exporter on windows
+
+There is no official Prometheus exports for windows
+
+WMI: Windows Management Instrumentation  its windows feature
+It will manage resources in windows
+Go to : https://github.com/prometheus-community/windows_exporter
+Under installation we have “Release page”
+It will take you to : https://github.com/prometheus-community/windows_exporter/releases
+Download: https://github.com/prometheus-community/windows_exporter/releases/download/v0.30.7/windows_exporter-0.30.7-amd64.msi     under “Assets”
+
+<Server IP>:9182/metrics
