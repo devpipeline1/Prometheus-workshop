@@ -1,0 +1,161 @@
+vi /etc/prometheus/rules/alerts.yaml
+groups:
+  - name: up_status_rules
+    rules:
+      - alert: TargetDown
+        expr: up{job="linux_client"} == 0
+
+update rule file inside Prometheus.yaml
+rule_files:
+  - "rules/alerts.yaml"
+
+
+Sample alerts
+https://samber.github.io/awesome-prometheus-alerts/rules
+
+
+Labels and anotations
+
+groups:
+  - name: up_status_rules
+    interval: 30s
+    rules:
+      - alert: TargetDown
+        expr: up{job="linux_client"} == 0
+        for: 1m
+        labels:
+          team: infra  
+          severity: Critical
+        annotations:
+          summary: "Target {{ $labels.instance }}  is down"
+          description: “Instance {{ $labels.instance }} is unreachable. {{ $labels }} and value is : {{ $value }}”
+
+
+
+Installing Alert Manager
+
+wget https://github.com/prometheus/alertmanager/releases/download/v0.34.0/alertmanager-0.34.0.linux-amd64.tar.gz
+
+tar -xvf alertmanager-0.34.0.linux-amd64.tar.gz
+
+cd alertmanager-0.34.0.linux-amd64
+mkdir -p /var/lib/alertmanager
+mv * /var/lib/alertmanager/
+cd /var/lib/alertmanager/
+mkdir -p data
+chown -R prometheus:prometheus /var/lib/alertmanager/
+chmod -R 775 /var/lib/alertmanager/
+
+
+Alert manager service file - /etc/systemd/system/alertmanager.service
+[Unit]
+Description=Prometheus Alert Manager
+Documentation=https://prometheus.io/docs/introduction/overview/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/var/lib/alertmanager/alertmanager --storage.path="/var/lib/alertmanager/data" --config.file="/var/lib/alertmanager/alertmanager.yml"
+
+SyslogIdentifier=prometheus_alert_manager
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl daemon-reload
+systemctl start alertmanager.service
+systemctl status alertmanager.service
+
+http://192.168.0.195:9093
+
+Enable alert manager in prometheus.yaml
+
+# my global config
+global:
+  scrape_interval: 15s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  evaluation_interval: 15s # Evaluate rules every 15 seconds. The default is every 1 minute.
+  # scrape_timeout is set to the global default (10s).
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - localhost:9093
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+ - "/etc/prometheus/rules/alerts.yaml"
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: "prometheus"
+
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+
+    static_configs:
+      - targets: ["localhost:9090"]
+       # The label name is added as a label `label_name=<label_value>` to any timeseries scraped from this config.
+        labels:
+          app: "prometheus"
+    scrape_native_histograms: true
+  - job_name: "node"
+    scrape_interval: 15s   # Prometheus scrapes every 15 seconds
+    scrape_timeout: 10s    # Each scrape must finish within 10 seconds
+    static_configs:
+      - targets: ["13.203.101.209:9100"]
+        labels:
+          app: "prometheus_node"
+
+route the alert into alertmanger's default channel
+==================================================
+route:
+  receiver: default
+
+receivers:
+  - name: default
+
+
+Route the alert into slack
+==========================
+route:
+  receiver: 'slack-notifications'
+receivers:
+  - name: 'slack-notifications'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/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'
+        channel: '#new-channel'
+login slack  channel ;select integration tab add an app  search incoming web hook add to slack choose the channel where do you want to receive notificationchange emoji if you want
+then webhook url will be generated  copy this url
+
+if we want we can route alert into different channels:
+=====================================================
+
+route:
+  receiver: 'main_receiver'
+
+  routes:
+  - receiver: 'urgent_receiver'
+    matchers:
+    - severity="Critical"
+
+  receivers:
+    - name: 'main_receiver'
+      slack_configs:
+        - api_url: 'https://hooks.slack.com/services/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'
+          channel: '#new-channel'
+    - name: 'urgent_reciver'
+      email_configs:
+      - to: 'vecijon975@calorpg.com'
+
+
