@@ -1,0 +1,42 @@
+Go to https://prometheus.io/download/#node_exporter
+
+Download package using wget command
+wget https://github.com/prometheus/node_exporter/releases/download/v1.12.1/node_exporter-1.12.1.linux-amd64.tar.gz
+
+Unzip tar file
+tar -xvf node_exporter-1.12.1.linux-amd64.tar.gz 
+
+run node exporter service in backend
+cd node_exporter-1.12.1.linux-amd64/
+./node_exporter &
+<client server ip address>:9100
+
+Better create a service for node exporter as well
+
+mv node_exporter /usr/local/bin/node_exporter
+
+Create service for node exporter
+vi /etc/systemd/system/nodeexporter.service
+[Unit]
+Description=Node_exporter
+Documentation=https://prometheus.io/docs/introduction/overview/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=node_exporter
+Group= node_exporter
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/usr/local/bin/node_exporter
+SyslogIdentifier=node_exporter
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+
+sudo systemctl daemon-reload
+sudo systemctl enable nodeexporter
+sudo systemctl start nodeexporter
+sudo systemctl status nodeexporter
