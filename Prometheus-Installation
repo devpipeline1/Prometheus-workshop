@@ -1,0 +1,92 @@
+Go to https://prometheus.io/download/
+Select operating system and download Prometheus
+wget https://github.com/prometheus/prometheus/releases/download/v3.14.0/prometheus-3.14.0.linux-amd64.tar.gz
+
+groupadd --system prometheus
+useradd -s /sbin/nologin --system -g prometheus prometheus
+id prometheus
+mkdir -p /var/lib/prometheus
+mkdir -p /etc/prometheus/rules
+mkdir -p /etc/prometheus/rules.s
+mkdir -p /etc/prometheus/files_sd
+
+Extract Prometheus zip file
+tar xvf prometheus-3.14.0.linux-amd64.tar.gz
+[root@localhost ~]# ls
+anaconda-ks.cfg  prometheus-3.14.0.linux-amd64  prometheus-3.14.0.linux-amd64.tar.gz
+
+[root@localhost ~]# cd prometheus-3.14.0.linux-amd64/
+
+[root@localhost prometheus-3.14.0.linux-amd64]# ls
+LICENSE  NOTICE  prometheus  prometheus.yml  promtool
+[root@localhost prometheus-3.14.0.linux-amd64]#
+
+Move binary files to bin folder
+[root@localhost ~]# cd prometheus-3.14.0.linux-amd64/
+
+[root@localhost prometheus-3.14.0.linux-amd64]# ls
+LICENSE  NOTICE  prometheus  prometheus.yml  promtool
+
+[root@localhost prometheus-3.4.0.linux-amd64]#mv prometheus promtool /usr/local/sbin
+
+
+[root@localhost ~]#prometheus --version
+prometheus, version 3.14.0 (branch: HEAD, revision: d7598b7141418fa35be2b5ec5d0fefb634199610)
+  build user:       root@f423027f4410
+  build date:       20260817-16:49:19
+  go version:       go1.26.6
+  platform:         linux/amd64
+  tags:             netgo,builtinassets
+
+
+Move configuration file to /etc/prometheus
+[root@localhost prometheus-3.14.0.linux-amd64]# mv prometheus.yml /etc/prometheus/prometheus.yml
+
+
+
+Create a service file to start and stop Prometheus service
+vi /etc/systemd/system/prometheus.service
+[Unit]
+Description=Prometheus
+Documentation=https://prometheus.io/docs/introduction/overview/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=prometheus
+Group=prometheus
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/usr/local/sbin/prometheus \
+  --config.file=/etc/prometheus/prometheus.yml \
+  --storage.tsdb.path=/var/lib/prometheus \
+  --web.console.templates=/etc/prometheus/consoles \
+  --web.console.libraries=/etc/prometheus/console_libraries \
+  --web.listen-address=0.0.0.0:9090 \
+  --web.external-url=
+
+SyslogIdentifier=prometheus
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+
+Provide permissions to Prometheus config files and directories
+===============================================================
+chown -R prometheus:prometheus /etc/prometheus
+chmod -R 775 /etc/prometheus/
+chown -R prometheus:prometheus /var/lib/prometheus/
+systemctl daemon-reload
+systemctl start prometheus
+systemctl status prometheus
+systemctl enable prometheus
+
+
+Access Prometheus via browser
+<server IP>:9090
+http://192.168.0.216:9090/
+
+
+
+
