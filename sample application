@@ -198,7 +198,8 @@ opentelemetry-instrumentation-flask
 
 pip3 install -r requirements.txt
 
-Start the application
+**Start the application**
+=========================
 cd /opt/sample-app
 
 python3 app.py
@@ -210,27 +211,9 @@ curl http://localhost:8080/
 }
 
 
-Generate test logs
-
-curl http://localhost:8080/
-curl http://localhost:8080/hello
-curl http://localhost:8080/database
-curl http://localhost:8080/slow
-curl http://localhost:8080/error
-
-for i in {1..20}; do
-    curl -s http://localhost:8080/hello
-    echo
-    sleep 1
-done
-
-for i in {1..10}; do
-    curl -s http://localhost:8080/error
-    echo
-    sleep 1
-done
 
 
+                        (OR)
 
 sudo vi /etc/systemd/system/sample-app.service
 =============================================
@@ -260,3 +243,24 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable sample-app
 sudo systemctl start sample-app
+
+
+Generate test logs
+
+curl http://localhost:8080/
+curl http://localhost:8080/hello
+curl http://localhost:8080/database
+curl http://localhost:8080/slow
+curl http://localhost:8080/error
+
+for i in {1..20}; do
+    curl -s http://localhost:8080/hello
+    echo
+    sleep 1
+done
+
+for i in {1..10}; do
+    curl -s http://localhost:8080/error
+    echo
+    sleep 1
+done
