@@ -94,3 +94,9 @@ done
 
 sudo journalctl -u promtail -n 50 --no-pager
 
+Your Loki EC2 Security Group needs:
+Inbound rule:
+
+Type: Custom TCP
+Port: 3100
+Source: Application EC2 Security Group
