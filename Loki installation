@@ -1,0 +1,150 @@
+Download Loki
+wget https://github.com/grafana/loki/releases/latest/download/loki-linux-amd64.zip
+
+unzip loki-linux-amd64.zip
+sudo mv loki-linux-amd64 /usr/local/bin/loki
+sudo chmod +x /usr/local/bin/loki
+loki --version
+
+Create a dedicated Loki user
+sudo useradd --system --no-create-home --shell /sbin/nologin loki
+id loki
+
+
+sudo mkdir -p /etc/loki
+sudo mkdir -p /var/lib/loki
+sudo mkdir -p /var/lib/loki/chunks
+sudo mkdir -p /var/lib/loki/index
+sudo mkdir -p /var/lib/loki/index_cache
+sudo mkdir -p /var/lib/loki/rules
+sudo mkdir -p /var/lib/loki/compactor
+
+
+sudo chown -R loki:loki /var/lib/loki
+sudo chown -R loki:loki /etc/loki
+
+Create Loki configuration
+=========================
+sudo vi /etc/loki/config.yaml
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /var/lib/loki
+
+  storage:
+    filesystem:
+      chunks_directory: /var/lib/loki/chunks
+      rules_directory: /var/lib/loki/rules
+
+  replication_factor: 1
+
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 168h
+
+compactor:
+  working_directory: /var/lib/loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+
+Validate the Loki configuration
+==============================
+sudo -u loki /usr/local/bin/loki \
+  -config.file=/etc/loki/config.yaml
+
+http://localhost:3100
+
+curl http://localhost:3100/ready
+curl http://localhost:3100/metrics
+
+
+sudo vi /etc/systemd/system/loki.service
+
+[Unit]
+Description=Grafana Loki
+Documentation=https://grafana.com/docs/loki/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=loki
+Group=loki
+
+ExecStart=/usr/local/bin/loki -config.file=/etc/loki/config.yaml
+
+Restart=on-failure
+RestartSec=5
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+sudo systemctl daemon-reload
+
+sudo systemctl enable loki
+sudo systemctl start loki
+sudo journalctl -u loki -f
+
+
+Internet
+   |
+   v
+Grafana
+   |
+   | Private VPC
+   v
+Loki :3100
+
+
+
+Test pushing a log to Loki
+===========================
+
+curl -X POST \
+  -H "Content-Type: application/json" \
+  http://localhost:3100/loki/api/v1/push \
+  --data-raw '{
+    "streams": [
+      {
+        "stream": {
+          "job": "test"
+        },
+        "values": [
+          ["'$(date +%s%N)'", "Hello from Loki EC2"]
+        ]
+      }
+    ]
+  }'
+
+
+
+curl -s "http://localhost:3100/loki/api/v1/query?query={job=\"test\"}" | jq
+
+
+
