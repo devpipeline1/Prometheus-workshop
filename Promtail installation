@@ -1,0 +1,106 @@
+Flask application
+       |
+       | writes
+       v
+/var/log/sample-app/app.log
+       |
+       | Promtail reads
+       v
+    Promtail
+       |
+       | HTTP
+       v
+      Loki
+       |
+       v
+    Grafana
+
+
+
+sudo mkdir -p /opt/promtail
+cd /opt/promtail
+sudo wget -O /opt/promtail/promtail.zip \
+https://github.com/grafana/loki/releases/download/v3.5.0/promtail-linux-amd64.zip
+sudo unzip /opt/promtail/promtail.zip -d /opt/promtail
+sudo mv /opt/promtail/promtail-linux-amd64 /opt/promtail/promtail
+sudo chmod +x /opt/promtail/promtail
+/opt/promtail/promtail --version
+
+
+Create Promtail configuration
+sudo mkdir -p /etc/promtail
+sudo vi /etc/promtail/promtail.yaml
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://10.0.2.20:3100/loki/api/v1/push
+
+scrape_configs:
+
+  - job_name: sample-app
+
+    journal:
+      max_age: 12h
+      labels:
+        job: sample-app
+
+    relabel_configs:
+
+      - source_labels:
+          - __journal__systemd_unit
+        target_label: unit
+
+      - source_labels:
+          - __journal__hostname
+        target_label: hostname
+
+
+
+sudo mkdir -p /var/lib/promtail
+sudo touch /var/lib/promtail/positions.yaml
+
+Test Promtail manually
+sudo /opt/promtail/promtail \
+  -config.file=/etc/promtail/promtail.yaml
+
+Generate application logs
+curl http://localhost:8080/
+curl http://localhost:8080/hello
+curl http://localhost:8080/slow
+curl http://localhost:8080/error
+for i in {1..20}; do
+    curl -s http://localhost:8080/hello
+    echo
+    sleep 1
+done
+
+
+sudo vi /etc/systemd/system/promtail.service
+[Unit]
+Description=Promtail Log Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=root
+Group=root
+
+ExecStart=/opt/promtail/promtail \
+  -config.file=/etc/promtail/promtail.yaml
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+
+sudo systemctl daemon-reload
