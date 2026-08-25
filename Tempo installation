@@ -79,7 +79,7 @@ Flask ─────────────────► Tempo
                           │
                           │ READ
                           ▼
-                       Tempo
+                       Tempo datasource
                           │
                           ▼
                        Grafana
