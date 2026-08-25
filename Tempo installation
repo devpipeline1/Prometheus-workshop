@@ -1,0 +1,161 @@
+                ┌───────────────────────┐
+                │   APPLICATION EC2     │
+                │                       │
+                │ Flask                 │
+                │   │                   │
+                │   ├── app.log         │
+                │   │     ↓             │
+                │   │   Promtail        │
+                │   │     ↓             │
+                │   │                   │
+                │   └── OTEL SDK        │
+                │         │             │
+                └─────────┼─────────────┘
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+             ▼                         ▼
+     ┌───────────────┐         ┌───────────────┐
+     │    LOKI EC2   │         │   TEMPO EC2   │
+     │               │         │               │
+     │ :3100         │         │ :4317 OTLP    │
+     │               │         │ :4318 OTLP    │
+     └───────┬───────┘         │ :3200 API     │
+             │                 └───────┬───────┘
+             │                         │
+             └────────────┬────────────┘
+                          ▼
+                   ┌─────────────┐
+                   │  GRAFANA    │
+                   │             │
+                   │ Loki → logs │
+                   │ Tempo→trace │
+                   └─────────────┘
+
+
+
+wget https://github.com/grafana/tempo/releases/download/v2.10.5/tempo_2.10.5_linux_amd64.tar.gz
+tar -xzf tempo_2.10.5_linux_amd64.tar.gz
+sudo mv tempo /usr/local/bin/tempo
+sudo chmod +x /usr/local/bin/tempo
+/usr/local/bin/tempo --version
+
+
+sudo mkdir -p /etc/tempo
+sudo vi /etc/tempo/tempo.yaml
+sudo mkdir -p /var/lib/tempo/traces
+
+Create a dedicated Tempo systemd service
+========================================
+sudo vi /etc/systemd/system/tempo.service
+
+[Unit]
+Description=Grafana Tempo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+User=root
+Group=root
+
+ExecStart=/usr/local/bin/tempo \
+  -config.file=/etc/tempo/tempo.yaml
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+sudo systemctl daemon-reload
+sudo systemctl start tempo
+sudo systemctl enable tempo
+sudo systemctl status tempo
+
+
+Your Tempo EC2 security group needs to allow traffic from your Application EC2 security group.
+Inbound
+TCP 4317
+Source: Application EC2 Security Group
+For OTLP HTTP:
+TCP 4318
+Source: Application EC2 Security Group
+For Grafana:
+TCP 3200
+Source: Grafana EC2 Security Group
+
+
+
+Check your Flask OTLP configuration
+we should have 
+
+OTLPSpanExporter(
+    endpoint="http://172.31.9.142:4317",
+    insecure=True
+)
+
+
+open app.py and add below imports
+
+import logging
+import os
+
+from flask import Flask, jsonify
+
+# OpenTelemetry imports
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+
+
+add below opentelemetry code after app = Flask(__name__)
+
+
+# ============================================================
+# OpenTelemetry
+# ============================================================
+
+resource = Resource.create({
+    "service.name": "sample-flask-app",
+    "service.version": "1.0.0",
+    "deployment.environment": "test"
+})
+
+provider = TracerProvider(
+    resource=resource
+)
+
+tempo_exporter = OTLPSpanExporter(
+    endpoint="http://172.31.9.142:4317",
+    insecure=True
+)
+
+provider.add_span_processor(
+    BatchSpanProcessor(tempo_exporter)
+)
+
+trace.set_tracer_provider(provider)
+
+tracer = trace.get_tracer("sample-flask-app")
+
+# Automatically create spans for Flask requests
+FlaskInstrumentor().instrument_app(app)
+
+
+sudo systemctl restart sample-app
+
+Generate some traces
+curl http://localhost:8080/
+curl http://localhost:8080/hello
+curl http://localhost:8080/error
+
+Check Grafana
+=============
+grafana connection url
+http://172.31.9.142:3200
+
