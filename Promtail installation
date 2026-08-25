@@ -30,6 +30,7 @@ sudo chmod +x /opt/promtail/promtail
 Create Promtail configuration
 sudo mkdir -p /etc/promtail
 sudo vi /etc/promtail/promtail.yaml
+==================================
 
 server:
   http_listen_port: 9080
@@ -42,24 +43,16 @@ clients:
   - url: http://10.0.2.20:3100/loki/api/v1/push
 
 scrape_configs:
-
   - job_name: sample-app
-
-    journal:
-      max_age: 12h
-      labels:
-        job: sample-app
-
-    relabel_configs:
-
-      - source_labels:
-          - __journal__systemd_unit
-        target_label: unit
-
-      - source_labels:
-          - __journal__hostname
-        target_label: hostname
-
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: sample-app
+          service: sample-flask-app
+          environment: test
+          host: application-ec2
+          __path__: /var/log/sample-app/*.log
 
 
 sudo mkdir -p /var/lib/promtail
