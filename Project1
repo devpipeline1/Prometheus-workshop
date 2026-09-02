@@ -1,0 +1,1412 @@
+script
+
+#!/bin/bash
+
+set -e
+
+# ============================================================
+# AWS EKS WORKSHOP - PHASE 1 NETWORKING
+# Creates:
+#   Application VPC
+#   Monitoring VPC
+#   Public and Private Subnets
+#   Internet Gateways
+#   NAT Gateways
+#   Route Tables
+#   VPC Peering
+# ============================================================
+
+AWS_REGION="ap-south-1"
+
+APP_VPC_CIDR="10.10.0.0/16"
+MON_VPC_CIDR="10.20.0.0/16"
+
+APP_PUBLIC_SUBNET_1="10.10.1.0/24"
+APP_PUBLIC_SUBNET_2="10.10.2.0/24"
+APP_PRIVATE_SUBNET_1="10.10.11.0/24"
+APP_PRIVATE_SUBNET_2="10.10.12.0/24"
+
+MON_PUBLIC_SUBNET_1="10.20.1.0/24"
+MON_PUBLIC_SUBNET_2="10.20.2.0/24"
+MON_PRIVATE_SUBNET_1="10.20.11.0/24"
+MON_PRIVATE_SUBNET_2="10.20.12.0/24"
+
+AZ1="${AWS_REGION}a"
+AZ2="${AWS_REGION}b"
+
+echo "============================================================"
+echo "AWS REGION: $AWS_REGION"
+echo "============================================================"
+
+# ============================================================
+# CREATE APPLICATION VPC
+# ============================================================
+
+echo "Creating Application VPC..."
+
+APP_VPC_ID=$(aws ec2 create-vpc \
+  --region "$AWS_REGION" \
+  --cidr-block "$APP_VPC_CIDR" \
+  --query 'Vpc.VpcId' \
+  --output text)
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_VPC_ID" \
+  --tags Key=Name,Value=application-vpc
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --enable-dns-support "{\"Value\":true}"
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --enable-dns-hostnames "{\"Value\":true}"
+
+echo "Application VPC: $APP_VPC_ID"
+
+
+# ============================================================
+# CREATE MONITORING VPC
+# ============================================================
+
+echo "Creating Monitoring VPC..."
+
+MON_VPC_ID=$(aws ec2 create-vpc \
+  --region "$AWS_REGION" \
+  --cidr-block "$MON_VPC_CIDR" \
+  --query 'Vpc.VpcId' \
+  --output text)
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_VPC_ID" \
+  --tags Key=Name,Value=monitoring-vpc
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --enable-dns-support "{\"Value\":true}"
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --enable-dns-hostnames "{\"Value\":true}"
+
+echo "Monitoring VPC: $MON_VPC_ID"
+
+
+# ============================================================
+# APPLICATION SUBNETS
+# ============================================================
+
+echo "Creating Application subnets..."
+
+APP_PUBLIC_SUBNET_ID_1=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PUBLIC_SUBNET_1" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+APP_PUBLIC_SUBNET_ID_2=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PUBLIC_SUBNET_2" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+APP_PRIVATE_SUBNET_ID_1=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PRIVATE_SUBNET_1" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+APP_PRIVATE_SUBNET_ID_2=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PRIVATE_SUBNET_2" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+# ============================================================
+# MONITORING SUBNETS
+# ============================================================
+
+echo "Creating Monitoring subnets..."
+
+MON_PUBLIC_SUBNET_ID_1=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PUBLIC_SUBNET_1" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+MON_PUBLIC_SUBNET_ID_2=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PUBLIC_SUBNET_2" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+MON_PRIVATE_SUBNET_ID_1=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PRIVATE_SUBNET_1" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+MON_PRIVATE_SUBNET_ID_2=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PRIVATE_SUBNET_2" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+# ============================================================
+# TAG SUBNETS
+# ============================================================
+
+echo "Tagging subnets..."
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$APP_PUBLIC_SUBNET_ID_1" \
+  --tags Key=Name,Value=application-public-1
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$APP_PUBLIC_SUBNET_ID_2" \
+  --tags Key=Name,Value=application-public-2
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$APP_PRIVATE_SUBNET_ID_1" \
+  --tags Key=Name,Value=application-private-1
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$APP_PRIVATE_SUBNET_ID_2" \
+  --tags Key=Name,Value=application-private-2
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$MON_PUBLIC_SUBNET_ID_1" \
+  --tags Key=Name,Value=monitoring-public-1
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$MON_PUBLIC_SUBNET_ID_2" \
+  --tags Key=Name,Value=monitoring-public-2
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$MON_PRIVATE_SUBNET_ID_1" \
+  --tags Key=Name,Value=monitoring-private-1
+
+aws ec2 create-tags --region "$AWS_REGION" \
+  --resources "$MON_PRIVATE_SUBNET_ID_2" \
+  --tags Key=Name,Value=monitoring-private-2
+
+
+# ============================================================
+# INTERNET GATEWAYS
+# ============================================================
+
+echo "Creating Internet Gateways..."
+
+APP_IGW_ID=$(aws ec2 create-internet-gateway \
+  --region "$AWS_REGION" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+aws ec2 attach-internet-gateway \
+  --region "$AWS_REGION" \
+  --internet-gateway-id "$APP_IGW_ID" \
+  --vpc-id "$APP_VPC_ID"
+
+MON_IGW_ID=$(aws ec2 create-internet-gateway \
+  --region "$AWS_REGION" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+aws ec2 attach-internet-gateway \
+  --region "$AWS_REGION" \
+  --internet-gateway-id "$MON_IGW_ID" \
+  --vpc-id "$MON_VPC_ID"
+
+
+# ============================================================
+# PUBLIC ROUTE TABLES
+# ============================================================
+
+echo "Creating Public Route Tables..."
+
+APP_PUBLIC_RT=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PUBLIC_RT" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id "$APP_IGW_ID"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PUBLIC_RT" \
+  --subnet-id "$APP_PUBLIC_SUBNET_ID_1"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PUBLIC_RT" \
+  --subnet-id "$APP_PUBLIC_SUBNET_ID_2"
+
+
+MON_PUBLIC_RT=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PUBLIC_RT" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id "$MON_IGW_ID"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PUBLIC_RT" \
+  --subnet-id "$MON_PUBLIC_SUBNET_ID_1"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PUBLIC_RT" \
+  --subnet-id "$MON_PUBLIC_SUBNET_ID_2"
+
+
+# ============================================================
+# NAT GATEWAYS
+# ============================================================
+
+echo "Creating Elastic IPs..."
+
+APP_NAT_EIP=$(aws ec2 allocate-address \
+  --region "$AWS_REGION" \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+MON_NAT_EIP=$(aws ec2 allocate-address \
+  --region "$AWS_REGION" \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+
+echo "Creating NAT Gateways..."
+
+APP_NAT_ID=$(aws ec2 create-nat-gateway \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PUBLIC_SUBNET_ID_1" \
+  --allocation-id "$APP_NAT_EIP" \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+MON_NAT_ID=$(aws ec2 create-nat-gateway \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PUBLIC_SUBNET_ID_1" \
+  --allocation-id "$MON_NAT_EIP" \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+
+echo "Waiting for NAT Gateways..."
+
+aws ec2 wait nat-gateway-available \
+  --region "$AWS_REGION" \
+  --nat-gateway-ids "$APP_NAT_ID"
+
+aws ec2 wait nat-gateway-available \
+  --region "$AWS_REGION" \
+  --nat-gateway-ids "$MON_NAT_ID"
+
+
+# ============================================================
+# PRIVATE ROUTE TABLES
+# ============================================================
+
+echo "Creating Private Route Tables..."
+
+APP_PRIVATE_RT=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id "$APP_NAT_ID"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT" \
+  --subnet-id "$APP_PRIVATE_SUBNET_ID_1"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT" \
+  --subnet-id "$APP_PRIVATE_SUBNET_ID_2"
+
+
+MON_PRIVATE_RT=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT" \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id "$MON_NAT_ID"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT" \
+  --subnet-id "$MON_PRIVATE_SUBNET_ID_1"
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT" \
+  --subnet-id "$MON_PRIVATE_SUBNET_ID_2"
+
+
+# ============================================================
+# VPC PEERING
+# ============================================================
+
+echo "Creating VPC Peering..."
+
+PEERING_ID=$(aws ec2 create-vpc-peering-connection \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --peer-vpc-id "$MON_VPC_ID" \
+  --peer-region "$AWS_REGION" \
+  --query 'VpcPeeringConnection.VpcPeeringConnectionId' \
+  --output text)
+
+aws ec2 accept-vpc-peering-connection \
+  --region "$AWS_REGION" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+# ============================================================
+# VPC PEERING ROUTES
+# ============================================================
+
+echo "Creating VPC Peering Routes..."
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT" \
+  --destination-cidr-block "$MON_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT" \
+  --destination-cidr-block "$APP_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+# ============================================================
+# SAVE OUTPUT
+# ============================================================
+
+cat > network-info.env <<EOF2
+export AWS_REGION=$AWS_REGION
+
+export APP_VPC_ID=$APP_VPC_ID
+export MON_VPC_ID=$MON_VPC_ID
+
+export APP_PUBLIC_SUBNET_1=$APP_PUBLIC_SUBNET_ID_1
+export APP_PUBLIC_SUBNET_2=$APP_PUBLIC_SUBNET_ID_2
+
+export APP_PRIVATE_SUBNET_1=$APP_PRIVATE_SUBNET_ID_1
+export APP_PRIVATE_SUBNET_2=$APP_PRIVATE_SUBNET_ID_2
+
+export MON_PUBLIC_SUBNET_1=$MON_PUBLIC_SUBNET_ID_1
+export MON_PUBLIC_SUBNET_2=$MON_PUBLIC_SUBNET_ID_2
+
+export MON_PRIVATE_SUBNET_1=$MON_PRIVATE_SUBNET_ID_1
+export MON_PRIVATE_SUBNET_2=$MON_PRIVATE_SUBNET_ID_2
+
+export APP_NAT_ID=$APP_NAT_ID
+export MON_NAT_ID=$MON_NAT_ID
+
+export PEERING_ID=$PEERING_ID
+EOF2
+
+
+echo ""
+echo "============================================================"
+echo "PHASE 1 NETWORKING COMPLETED"
+echo "============================================================"
+
+cat network-info.env
+
+
+
+======================================================================
+
+Next: PHASE 2 — CREATE MONITORING EKS
+=====================================
+aws ec2 describe-vpcs \
+  --region ap-south-1 \
+  --filters "Name=cidr-block,Values=10.10.0.0/16,10.20.0.0/16" \
+  --query "Vpcs[*].[VpcId,CidrBlock]" \
+  --output table
+
+monitoring-eks.yaml
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: monitoring-eks
+  region: ap-south-1
+
+vpc:
+  id: vpc-0c8bbd1be0daa4adb
+  subnets:
+    private:
+      ap-south-1a:
+        id: subnet-071d627fd07cfd1b5
+      ap-south-1b:
+        id: subnet-0a40bc22a145557f1
+
+managedNodeGroups:
+  - name: monitoring-ng
+    instanceType: t3.large
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 4
+    privateNetworking: true
+    volumeSize: 30
+    ssh:
+      allow: false
+    labels:
+      role: monitoring
+
+    tags:
+      Name: monitoring-worker-node
+      Environment: monitoring
+
+iam:
+  withOIDC: true
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+kubectl get nodes
+
+Verify OIDC
+==========
+$ eksctl utils associate-iam-oidc-provider \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --approve
+
+
+INSTALL EBS CSI DRIVER + CREATE GP3 STORAGECLASS
+==============================
+
+Create IAM Service Account for EBS CSI
+kubectl get sa ebs-csi-controller-sa -n kube-system
+
+create the IAM service account:
+------------------------------
+eksctl create iamserviceaccount \
+  --cluster $MON_CLUSTER \
+  --region $AWS_REGION \
+  --namespace kube-system \
+  --name ebs-csi-controller-sa \
+  --role-name AmazonEKS_EBS_CSI_DriverRole_monitoring \
+  --role-only \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve
+
+Install or verify EBS CSI addon
+-------------------------------
+eksctl create addon \
+  --cluster $MON_CLUSTER \
+  --region $AWS_REGION \
+  --name aws-ebs-csi-driver \
+  --force
+
+kubectl get pods -n kube-system | grep ebs
+
+You should eventually see something similar:
+
+ebs-csi-controller-xxxxx    Running
+ebs-csi-controller-xxxxx    Running
+ebs-csi-node-xxxxx          Running
+ebs-csi-node-xxxxx          Running
+ebs-csi-node-xxxxx          Running
+
+Check existing StorageClasses
+kubectl get storageclass
+
+
+Create GP3 StorageClass
+=======================
+vi gp3-storageclass.yaml
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+
+provisioner: ebs.csi.aws.com
+
+volumeBindingMode: WaitForFirstConsumer
+
+allowVolumeExpansion: true
+
+parameters:
+  type: gp3
+  fsType: ext4
+
+kubectl apply -f gp3-storageclass.yaml
+
+Verify StorageClass
+kubectl get storageclass
+
+Expected:
+
+NAME            PROVISIONER         DEFAULT
+gp2             kubernetes.io/aws-ebs
+gp3 (default)   ebs.csi.aws.com     Yes
+
+Monitoring EKS
+│
+├── 3 Worker Nodes
+│
+├── EBS CSI Driver
+│
+└── gp3 StorageClass
+      │
+      ├── Prometheus PVC
+      ├── Thanos Store Gateway PVC
+      └── Thanos Compactor PVC
+
+INSTALL AWS LOAD BALANCER CONTROLLER
+======================================
+Download the AWS Load Balancer Controller IAM policy
+
+curl -o iam_policy.json \
+https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+ls -lh iam_policy.json
+
+Create IAM policy to install aws load balancer
+
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam_policy.json
+
+save the ARN Policy
+==================
+export LBC_POLICY_ARN=$(aws iam list-policies \
+  --scope Local \
+  --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn | [0]" \
+  --output text)
+
+echo $LBC_POLICY_ARN
+
+Expected format:
+
+arn:aws:iam::YOUR_ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy
+
+Create IRSA Service Account
+===========================
+This is the important part that prevents the controller from using the worker node IAM role.
+
+eksctl create iamserviceaccount \
+  --cluster $MON_CLUSTER \
+  --region $AWS_REGION \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole-monitoring \
+  --attach-policy-arn $LBC_POLICY_ARN \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+Verify ServiceAccount IRSA annotation
+kubectl get sa aws-load-balancer-controller \
+  -n kube-system \
+  -o yaml
+
+You must see something similar to:
+
+annotations:
+  eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/AmazonEKSLoadBalancerControllerRole-monitoring
+
+
+Add Helm repository
+==================
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+Get Monitoring VPC ID
+=====================
+export MON_VPC_ID=$(aws eks describe-cluster \
+  --name $MON_CLUSTER \
+  --region $AWS_REGION \
+  --query "cluster.resourcesVpcConfig.vpcId" \
+  --output text)
+
+echo $MON_VPC_ID
+
+Install AWS Load Balancer Controller
+====================================
+helm upgrade --install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=$MON_CLUSTER \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=$AWS_REGION \
+  --set vpcId=$MON_VPC_ID
+
+Verify Controller
+================
+kubectl get deployment \
+  -n kube-system \
+  aws-load-balancer-controller
+
+$ kubectl get pods \
+  -n kube-system \
+  | grep aws-load-balancer-controller
+
+aws-load-balancer-controller-547f9f7dc6-5hc86   1/1     Running   0          62s
+aws-load-balancer-controller-547f9f7dc6-fjtt9   1/1     Running   0          62s
+
+
+$ kubectl describe sa aws-load-balancer-controller \
+  -n kube-system
+Name:                aws-load-balancer-controller
+Namespace:           kube-system
+Labels:              app.kubernetes.io/managed-by=eksctl
+Annotations:         eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/AmazonEKSLoadBalancerControllerRole-monitoring
+Image pull secrets:  <none>
+Events:              <none>
+
+
+Create Thanos S3 bucket + IAM policy + IRSA, then install Prometheus HA, Thanos, and Grafana.
+
+export THANOS_BUCKET=thanos-metrics-${ACCOUNT_ID}-${AWS_REGION}
+
+
+Create S3 bucket
+
+aws s3api create-bucket \
+  --bucket $THANOS_BUCKET \
+  --region $AWS_REGION \
+  --create-bucket-configuration LocationConstraint=$AWS_REGION
+
+Verify:
+aws s3 ls | grep thanos
+
+Enable versioning
+================
+aws s3api put-bucket-versioning \
+  --bucket $THANOS_BUCKET \
+  --versioning-configuration Status=Enabled
+
+$ aws s3api get-bucket-versioning \
+  --bucket $THANOS_BUCKET
+{
+    "Status": "Enabled"
+}
+
+
+Enable default encryption
+========================
+aws s3api put-bucket-encryption \
+  --bucket $THANOS_BUCKET \
+  --server-side-encryption-configuration '{
+    "Rules": [
+      {
+        "ApplyServerSideEncryptionByDefault": {
+          "SSEAlgorithm": "AES256"
+        }
+      }
+    ]
+  }'
+
+
+Create Thanos S3 IAM policy
+==========================
+vi thanos-s3-policy.json
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ThanosBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::REPLACE_BUCKET_NAME"
+    },
+    {
+      "Sid": "ThanosObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::REPLACE_BUCKET_NAME/*"
+    }
+  ]
+}
+
+
+
+sed -i "s/REPLACE_BUCKET_NAME/$THANOS_BUCKET/g" thanos-s3-policy.json
+
+Create IAM Policy
+=================
+aws iam create-policy \
+  --policy-name ThanosS3Policy \
+  --policy-document file://thanos-s3-policy.json
+
+
+{
+    "Policy": {
+        "PolicyName": "ThanosS3Policy",
+        "PolicyId": "ANPAQVIP26IDA7YYGGKPA",
+        "Arn": "arn:aws:iam::045667250694:policy/ThanosS3Policy",
+        "Path": "/",
+        "DefaultVersionId": "v1",
+        "AttachmentCount": 0,
+        "PermissionsBoundaryUsageCount": 0,
+        "IsAttachable": true,
+        "CreateDate": "2026-09-02T17:26:49+00:00",
+        "UpdateDate": "2026-09-02T17:26:49+00:00"
+    }
+}
+
+Get Policy ARN 
+
+export THANOS_POLICY_ARN=$(aws iam list-policies \
+  --scope Local \
+  --query "Policies[?PolicyName=='ThanosS3Policy'].Arn | [0]" \
+  --output text)
+
+echo $THANOS_POLICY_ARN
+
+Expected:
+
+arn:aws:iam::045667250694:policy/ThanosS3Policy
+
+
+Create Thanos IRSA ServiceAccount
+=================================
+eksctl create iamserviceaccount \
+  --cluster $MON_CLUSTER \
+  --region $AWS_REGION \
+  --namespace monitoring \
+  --name thanos-s3 \
+  --role-name ThanosS3Role-monitoring \
+  --attach-policy-arn $THANOS_POLICY_ARN \
+  --approve
+
+This will create:
+
+Kubernetes ServiceAccount
+        │
+        ▼
+thanos-s3
+        │
+        ▼
+IAM Role
+        │
+        ▼
+ThanosS3Policy
+        │
+        ▼
+Amazon S3
+
+Verify Thanos ServiceAccount
+============================
+kubectl get sa thanos-s3 \
+  -n monitoring \
+  -o yaml
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/ThanosS3Role-monitoring
+  creationTimestamp: "2026-09-02T17:29:45Z"
+  labels:
+    app.kubernetes.io/managed-by: eksctl
+  name: thanos-s3
+  namespace: monitoring
+  resourceVersion: "50586"
+  uid: 608155e3-7695-43e1-b81a-79971d263a5c
+
+
+Create the Thanos Object Store Secret
+
+vi objstore.yml
+
+type: S3
+
+config:
+  bucket: REPLACE_BUCKET_NAME
+  endpoint: s3.ap-south-1.amazonaws.com
+  region: ap-south-1
+  aws_sdk_auth: true
+
+sed -i "s/REPLACE_BUCKET_NAME/$THANOS_BUCKET/g" objstore.yml
+
+Verify:
+
+$ kubectl describe secret thanos-objstore \
+  -n monitoring
+Name:         thanos-objstore
+Namespace:    monitoring
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+objstore.yml:  149 bytes
+
+
+WHY WE CREATE IRSA NOW
+Thanos process should have the correct IAM permissions
+
+We will prevent that by using IRSA for:
+
+Thanos components
+    │
+    └── thanos-s3 ServiceAccount
+          │
+          └── Thanos S3 IAM Role
+                │
+                └── ThanosS3Policy
+                      │
+                      └── S3 Bucket
+
+
+Check below commands before INSTALL PROMETHEUS HA + THANOS SIDECAR
+
+
+$ aws s3 ls | grep thanos
+2026-09-02 22:53:53 thanos-metrics-045667250694-ap-south-1
+
+
+$ kubectl get sa thanos-s3 -n monitoring -o yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/ThanosS3Role-monitoring
+  creationTimestamp: "2026-09-02T17:29:45Z"
+  labels:
+    app.kubernetes.io/managed-by: eksctl
+  name: thanos-s3
+  namespace: monitoring
+  resourceVersion: "50586"
+  uid: 608155e3-7695-43e1-b81a-79971d263a5c
+
+
+$ kubectl get secret thanos-objstore -n monitoring
+NAME              TYPE     DATA   AGE
+thanos-objstore   Opaque   1      3m50s
+
+✅ Monitoring EKS cluster running
+✅ 3 worker nodes running
+✅ EBS CSI driver running
+✅ gp3 StorageClass configured as default
+✅ AWS Load Balancer Controller running with IRSA
+✅ Thanos S3 bucket already created
+✅ thanos-s3 ServiceAccount configured with IRSA
+✅ thanos-objstore Secret created
+
+
+Now we are going to create:
+
+Monitoring EKS
+      │
+      ▼
+Prometheus HA (2 replicas)
+      │
+      ├── Local EBS Storage (gp3)
+      │
+      ▼
+Thanos Sidecar
+      │
+      ▼
+Amazon S3
+
+Prometheus HA setup:
+====================
+
+Prometheus Replica 0
+        │
+        ├── Local EBS Storage
+        └── Thanos Sidecar → S3
+
+Prometheus Replica 1
+        │
+        ├── Local EBS Storage
+        └── Thanos Sidecar → S3
+
+
+Prometheus local storage remains available even if Thanos/S3 has a temporary problem
+
+
+Add Helm repository
+
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+helm repo update
+
+Verify Prometheus stack availability in helm:
+
+helm search repo prometheus-community/kube-prometheus-stack
+
+
+vi prometheus-values.yaml
+
+# ============================================================
+# kube-prometheus-stack
+# Prometheus HA + Thanos Sidecar
+# ============================================================
+
+grafana:
+  enabled: false
+
+alertmanager:
+  enabled: false
+
+prometheus:
+  enabled: true
+
+  serviceAccount:
+    create: true
+    name: kube-prometheus-stack-prometheus
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/ThanosS3Role-monitoring
+
+  prometheusSpec:
+
+    replicas: 2
+
+    retention: 24h
+
+    retentionSize: 20GB
+
+    externalLabels:
+      cluster: monitoring-eks
+
+    replicaExternalLabelName: replica
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes:
+            - ReadWriteOnce
+
+          resources:
+            requests:
+              storage: 25Gi
+
+    thanos:
+
+      image: quay.io/thanos/thanos:v0.39.2
+      objectStorageConfig:
+
+        existingSecret:
+          name: thanos-objstore
+          key: objstore.yml
+
+
+
+Install kube-prometheus-stack
+
+helm upgrade --install kube-prometheus-stack \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace \
+  -f prometheus-values.yaml
+
+Check pod status
+kubectl get pods -n monitoring
+
+
+Verify Prometheus HA
+$ kubectl get pods -n monitoring | grep prometheus-kube-prometheus-stack-prometheus
+prometheus-kube-prometheus-stack-prometheus-0               2/3     Running   0          20s
+prometheus-kube-prometheus-stack-prometheus-1               3/3     Running   0          39s
+
+kubectl get statefulset -n monitoring
+
+Verify Thanos Sidecar containers
+
+
+kubectl get pod \
+  prometheus-kube-prometheus-stack-prometheus-0 \
+  -n monitoring \
+  -o jsonpath='{.spec.containers[*].name}'
+
+expected output:
+prometheus config-reloader thanos-sidecar
+
+
+Verify Thanos Sidecar logs
+
+$ kubectl logs \
+  prometheus-kube-prometheus-stack-prometheus-0 \
+  -n monitoring \
+  -c thanos-sidecar \
+  --tail=25
+
+your Thanos sidecar is now correctly loading the S3 bucket configuration.
+
+caller=factory.go:54 level=info msg="loading bucket configuration"
+msg="successfully loaded prometheus version"
+msg="successfully loaded prometheus external labels"
+
+
+samething check for replica-1
+kubectl logs \
+  prometheus-kube-prometheus-stack-prometheus-1 \
+  -n monitoring \
+  -c thanos-sidecar \
+  --tail=25
+
+
+This is confirms:
+Prometheus
+    ↓
+Thanos Sidecar
+    ↓
+S3
+
+
+Verify Prometheus PVCs
+kubectl get pvc -n monitoring
+Expected:
+
+STATUS   Bound
+
+
+Verify Prometheus ServiceAccount
+=============================
+kubectl get sa kube-prometheus-stack-prometheus \
+  -n monitoring \
+  -o yaml
+
+check annotation:
+annotations:
+  eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/ThanosS3Role-monitoring
+
+This will help from accessing S3 from Thanos sidecar
+
+our current setup is:
+=====================
+                 Monitoring EKS
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+ Prometheus Replica 0          Prometheus Replica 1
+          │                             │
+     Thanos Sidecar                Thanos Sidecar
+          │                             │
+          └──────────────┬──────────────┘
+                         │
+                  Amazon S3
+
+
+Install Thanos Query + Store Gateway + Compactor + Bucket Web
+=============================================================
+
+Application EKS
+      │
+      │ Alloy
+      ▼
+Monitoring EKS
+      │
+      ▼
+Prometheus HA
+      │
+      ▼
+Thanos Sidecar
+      │
+      ▼
+Amazon S3
+      │
+      ▼
+Thanos Store Gateway
+      │
+      ▼
+Thanos Query
+      │
+      ▼
+Grafana
+
+
+
+Verify S3 bucket after uploads
+aws s3 ls \
+  s3://$THANOS_BUCKET \
+  --recursive \
+  --region $AWS_REGION
+
+
+Important: Why S3 is still empty
+Your Prometheus configuration creates:
+Thanos block size: 2h
+Thanos uploads completed TSDB blocks. So you may need to wait for a block to complete before seeing data in S3.
+
+
+Next we will focus on:
+
+Prometheus HA
+     │
+     ▼
+Thanos Sidecars
+     │
+     ▼
+Amazon S3
+     │
+     ├── Thanos Store Gateway
+     ├── Thanos Compactor
+     └── Thanos Bucket Web
+              │
+              ▼
+         Thanos Query
+              │
+              ▼
+           Grafana
+
+
+Add/update Bitnami Helm repository
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+helm search repo bitnami/thanos
+
+vi thanos-values.yaml
+
+# ============================================================
+# THANO S IMAGE
+# ============================================================
+
+image:
+  registry: docker.io
+  repository: bitnamilegacy/thanos
+  tag: 0.39.2-debian-12-r2
+  pullPolicy: IfNotPresent
+
+
+# ============================================================
+# OBJECT STORAGE
+# ============================================================
+
+existingObjstoreSecret: thanos-objstore
+
+existingObjstoreSecretItems:
+  - key: objstore.yml
+    path: objstore.yml
+
+
+# ============================================================
+# THANO S QUERY
+# ============================================================
+
+query:
+  enabled: true
+
+  replicaLabel: replica
+
+  dnsDiscovery:
+    enabled: false
+
+  stores:
+    - prometheus-operated.monitoring.svc.cluster.local:10901
+
+  service:
+    type: ClusterIP
+
+
+# ============================================================
+# QUERY FRONTEND
+# ============================================================
+
+queryFrontend:
+  enabled: false
+
+
+# ============================================================
+# STORE GATEWAY
+# ============================================================
+
+storegateway:
+  enabled: true
+
+  serviceAccount:
+    create: false
+    name: thanos-s3
+
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 20Gi
+
+
+# ============================================================
+# COMPACTOR
+# ============================================================
+
+compactor:
+  enabled: true
+
+  serviceAccount:
+    create: false
+    name: thanos-s3
+
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 20Gi
+
+
+# ============================================================
+# BUCKET WEB
+# ============================================================
+
+bucketweb:
+  enabled: true
+
+  serviceAccount:
+    create: false
+    name: thanos-s3
+
+
+# ============================================================
+# DISABLE UNUSED COMPONENTS
+# ============================================================
+
+ruler:
+  enabled: false
+
+receive:
+  enabled: false
+
+
+
+
+Install Thanos
+
+helm upgrade --install thanos \
+  bitnami/thanos \
+  --namespace monitoring \
+  -f thanos-values.yaml
+
+
+kubectl get pods -n monitoring
+
+thanos-query-xxxxxxxxxx              Running
+thanos-storegateway-0                Running
+thanos-compactor-xxxxxxxxxx          Running
+thanos-bucketweb-xxxxxxxxxx          Running
+
+
+Check Thanos PVCs
+kubectl get pvc -n monitoring
+
+Check Thanos services
+
+kubectl get svc -n monitoring
+
+
+Verify Thanos Query can see Prometheus
+======================================
+
+kubectl logs deployment/thanos-query -n monitoring --tail=50
+kubectl logs statefulset/thanos-storegateway -n monitoring --tail=50
+kubectl logs deployment/thanos-compactor -n monitoring --tail=50
+
+Check Thanos Query UI
+
+kubectl port-forward -n monitoring svc/thanos-query 9090:9090
+
+Open in your browser:
+http://localhost:9090
+
+
+
+                         ┌─────────────────────┐
+                         │   Monitoring EKS    │
+                         │                     │
+                         │ Prometheus HA       │
+                         │                     │
+                         │ Prometheus-0        │
+                         │   Thanos Sidecar    │
+                         │        │            │
+                         │ Prometheus-1        │
+                         │   Thanos Sidecar    │
+                         └─────────┬───────────┘
+                                   │
+                                   ▼
+                          ┌─────────────────┐
+                          │   Amazon S3     │
+                          │ Thanos Bucket   │
+                          └────────┬────────┘
+                                   │
+                      ┌────────────┴─────────────┐
+                      │                          │
+                      ▼                          ▼
+              Thanos Store Gateway       Thanos Compactor
+                      │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                              Thanos Query
+                                   │
+                                   ▼
+                                 Grafana
