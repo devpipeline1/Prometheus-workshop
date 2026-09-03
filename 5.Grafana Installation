@@ -1,7 +1,7 @@
 Got to - https://grafana.com/grafana/download
 
 Run below command to install Grafana-server
-sudo yum install -y https://dl.grafana.com/enterprise/release/grafana-enterprise-12.0.1-1.x86_64.rpm
+sudo yum install -y https://dl.grafana.com/grafana-enterprise/release/13.2.1/grafana-enterprise_13.2.1_33191028959_linux_amd64.rpm
 
 Start and enable Grafana service
 systemctl start grafana-server.service
@@ -12,3 +12,7 @@ access Grafana via <Grafana server IP:3000>
 add Prometheus datasource, please create a user in Prometheus server for datasource authentication
 #useraddd grafana-user
 #passwd grafana-user
+
+we can import readymade dashboards which developed by grafana
+
+go to: https://grafana.com/grafana/dashboards
