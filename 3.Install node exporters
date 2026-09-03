@@ -15,6 +15,7 @@ Better create a service for node exporter as well
 
 mv node_exporter /usr/local/bin/node_exporter
 
+node_exporter --version
 
 # Create a dedicated system user and group
 sudo useradd --no-create-home --shell /bin/false node_exporter
@@ -47,7 +48,8 @@ sudo systemctl enable nodeexporter
 sudo systemctl start nodeexporter
 sudo systemctl status nodeexporter
 
-
+for any troubleshooting
+journalctl -u nodeexporter.service -e
 
 
 Install Node exporter on windows
