@@ -3285,3 +3285,525 @@ Finally Open Grafana and add loki datasource with
         endpoint {
           url = "http://k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
         }
+
+
+Tempo/Traces
+                         APPLICATION EKS
+                         ───────────────
+
+                         Online Boutique
+                               │
+             ┌─────────────────┼─────────────────┐
+             │                 │                 │
+             ▼                 ▼                 ▼
+          Metrics             Logs             Traces
+             │                 │                 │
+             │                 │                 │ OTLP
+             ▼                 ▼                 ▼
+           Alloy             Alloy             Alloy
+             │                 │                 │
+             │                 │                 │
+             ▼                 ▼                 ▼
+       Prometheus            Loki              Tempo
+             │                 │                 │
+             ▼                 │                 │
+           Thanos             │                 │
+             │                 │                 │
+             ▼                 │                 │
+             S3                │                 │
+             │                 │                 │
+             └─────────────────┼─────────────────┘
+                               │
+                               ▼
+                            Grafana
+
+
+Application EKS
+    │
+    │ OTLP traces
+    ▼
+Alloy
+    │
+    │ OTLP gRPC
+    ▼
+Tempo
+    │
+    ▼
+Grafana
+
+
+┌─────────────────────────────────────────────┐
+│ Application EKS                             │
+│                                             │
+│ Online Boutique Application                 │
+│        │                                    │
+│        │ OpenTelemetry OTLP                 │
+│        ▼                                    │
+│ Alloy Deployment                            │
+│ OTLP Receiver :4317 / :4318                │
+└────────────────────┬────────────────────────┘
+                     │
+                     │ VPC connectivity
+                     │
+┌────────────────────▼────────────────────────┐
+│ Monitoring EKS                              │
+│                                             │
+│ Tempo                                       │
+│        │                                    │
+│        ▼                                    │
+│ Grafana                                     │
+└─────────────────────────────────────────────┘
+
+
+Switch kubectl to Monitoring EKS
+
+kubectl config current-context
+
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name monitoring-eks
+
+
+Add Grafana Helm repository
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+$ kubectl create namespace tempo
+namespace/tempo created
+
+$ kubectl get namespace tempo
+NAME    STATUS   AGE
+tempo   Active   3s
+
+Install Tempo
+$ helm upgrade --install tempo grafana/tempo \
+  -n tempo \
+  -f tempo-values.yaml
+
+Release "tempo" does not exist. Installing it now.
+level=WARN msg="this chart is deprecated"
+NAME: tempo
+LAST DEPLOYED: Thu Sep  3 18:53:46 2026
+NAMESPACE: tempo
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+
+kubectl get pods -n tempo
+
+$ kubectl get svc -n tempo
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                                                                                                   AGE
+tempo   ClusterIP   172.20.201.119   <none>        6831/UDP,6832/UDP,3200/TCP,14268/TCP,14250/TCP,9411/TCP,55680/TCP,55681/TCP,4317/TCP,4318/TCP,55678/TCP   2m7s
+
+
+
+http://localhost:3200/ready
+http://localhost:3200/metrics
+
+$ kubectl get svc -n tempo
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                                                                                                   AGE
+tempo   ClusterIP   172.20.201.119   <none>        6831/UDP,6832/UDP,3200/TCP,14268/TCP,14250/TCP,9411/TCP,55680/TCP,55681/TCP,4317/TCP,4318/TCP,55678/TCP   2m7s
+
+
+Assuming your service is:
+tempo
+
+The Kubernetes DNS is:
+tempo.tempo.svc.cluster.local
+
+Tempo OTLP gRPC endpoint:
+tempo.tempo.svc.cluster.local:4317
+
+However, your Alloy is in Application EKS, while Tempo is in Monitoring EKS.
+
+Therefore:
+
+Application EKS
+        │
+        │
+        └──── cannot use Kubernetes DNS directly
+
+You need a network-accessible endpoint between the two clusters.
+
+
+Expose Tempo inside the Monitoring VPC
+======================================
+
+vi tempo-internal-service.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-otlp-internal
+  namespace: tempo
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+  selector:
+    app.kubernetes.io/name: tempo
+
+
+
+kubectl get pods -n tempo --show-labels
+NAME      READY   STATUS    RESTARTS   AGE     LABELS
+tempo-0   1/1     Running   0          7m49s   app.kubernetes.io/instance=tempo,app.kubernetes.io/name=tempo,apps.kubernetes.io/pod-index=0,controller-revision-hash=tempo-6b64b47fc7,statefulset.kubernetes.io/pod-name=tempo-0
+
+selector should match with pod label
+
+kubectl apply -f tempo-internal-service.yaml
+
+kubectl get svc -n tempo
+$ kubectl get svc -n tempo
+NAME                  TYPE           CLUSTER-IP       EXTERNAL-IP                                                                   PORT(S)
+                                                                  AGE
+tempo                 ClusterIP      172.20.201.119   <none>                                                                        6831/UDP,6832/UDP,3200/TCP,14268/TCP,14250/TCP,9411/TCP,55680/TCP,55681/TCP,4317/TCP,4318/TCP,55678/TCP   10m
+tempo-otlp-internal   LoadBalancer   172.20.182.153   k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com   4317:32118/TCP,4318:30217/TCP
+                                                                  36s
+
+save tempo loadbalancer externel ip
+export TEMPO_NLB=$(kubectl get svc tempo-otlp-internal \
+  -n tempo \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+$ echo $TEMPO_NLB
+k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com
+
+
+Verify network connectivity
+Switch back to Application EKS:
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name application-eks
+
+
+$ kubectl run network-test \
+  --image=busybox \
+  --restart=Never \
+  -it \
+  --rm \
+  -- sh
+All commands and output from this session will be recorded in container logs, including credentials and sensitive information passed through the command prompt.
+If you don't see a command prompt, try pressing enter.
+/ #
+# nc -zv k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com 4317
+k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com (10.20.11.37:4317) open
+/ # telnet k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com 4317
+Connected to k8s-tempo-tempootl-7b488ba63d-b559ab28609a862c.elb.ap-south-1.amazonaws.com
+
+
+add below content in alloy-values.yaml
+========================================
+controller:
+  type: deployment
+  replicas: 1
+
+alloy:
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+  configMap:
+    create: true
+
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      discovery.relabel "node_metrics" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          target_label = "__address__"
+          replacement  = "kubernetes.default.svc:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/${1}/proxy/metrics"
+        }
+      }
+
+      prometheus.scrape "nodes" {
+        job_name        = "kubernetes-nodes"
+        targets         = discovery.relabel.node_metrics.output
+        forward_to      = [prometheus.relabel.application_cluster.receiver]
+
+        scrape_interval = "30s"
+        scrape_timeout  = "20s"
+        scheme          = "https"
+
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        tls_config {
+          insecure_skip_verify = true
+        }
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_metrics" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_scrape",
+          ]
+
+          action = "keep"
+          regex  = "true"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_path",
+          ]
+
+          action       = "replace"
+          target_label = "__metrics_path__"
+          regex        = "(.+)"
+        }
+
+        rule {
+          source_labels = [
+            "__address__",
+            "__meta_kubernetes_pod_annotation_prometheus_io_port",
+          ]
+
+          action       = "replace"
+          regex        = "([^:]+)(?::[0-9]+)?;([0-9]+)"
+          replacement  = "${1}:${2}"
+          target_label = "__address__"
+        }
+      }
+
+      prometheus.scrape "pods" {
+        job_name        = "kubernetes-pods"
+        targets         = discovery.relabel.pod_metrics.output
+        forward_to      = [prometheus.relabel.application_cluster.receiver]
+
+        scrape_interval = "30s"
+        scrape_timeout  = "20s"
+      }
+
+      prometheus.relabel "application_cluster" {
+        forward_to = [
+          prometheus.remote_write.monitoring.receiver,
+        ]
+
+        rule {
+          action       = "replace"
+          target_label = "cluster"
+          replacement  = "application-eks"
+        }
+      }
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com:9090/api/v1/write"
+
+          queue_config {
+            capacity             = 10000
+            max_shards           = 10
+            min_shards           = 1
+            max_samples_per_send = 2000
+            batch_send_deadline  = "5s"
+            min_backoff          = "30ms"
+            max_backoff          = "5s"
+          }
+        }
+      }
+
+      discovery.kubernetes "pod_logs" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pod_logs.targets
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+          action       = "replace"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          target_label = "pod"
+          action       = "replace"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_container_name",
+          ]
+
+          target_label = "container"
+          action       = "replace"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          target_label = "app"
+          action       = "replace"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets = discovery.relabel.pod_logs.output
+
+        forward_to = [
+          loki.process.application_logs.receiver,
+        ]
+      }
+
+      loki.process "application_logs" {
+        stage.static_labels {
+          values = {
+            cluster = "application-eks",
+          }
+        }
+
+        forward_to = [
+          loki.write.monitoring.receiver,
+        ]
+      }
+
+      loki.write "monitoring" {
+        endpoint {
+          url = "http://k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+        }
+      }
+
+      otelcol.receiver.otlp "application_traces" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+
+        output {
+          traces = [
+            otelcol.processor.batch.application_traces.input,
+          ]
+        }
+      }
+
+      otelcol.processor.batch "application_traces" {
+        timeout         = "5s"
+        send_batch_size = 1024
+
+        output {
+          traces = [
+            otelcol.exporter.otlp.tempo.input,
+          ]
+        }
+      }
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo.tempo.svc.cluster.local:4317"
+
+          tls {
+            insecure             = true
+            insecure_skip_verify = true
+          }
+        }
+      }
+
+serviceAccount:
+  create: true
+
+rbac:
+  create: true
+
+Login monitoring cluster and take endpoint information from
+
+
+
+helm upgrade --install alloy grafana/alloy   -n alloy   --create-namespace   -f alloy-values.yaml
+$ kubectl get pods -n alloy
+NAME                     READY   STATUS    RESTARTS   AGE
+alloy-5c6c6b8cb8-7n5dz   2/2     Running   0          2m42s
+
+
+Add the Tempo data source in Grafana
+http://tempo.tempo.svc.cluster.local:3200
+
+
+
+
+Generate a test trace on application cluster
+
+kubectl run telemetrygen \
+  -n alloy \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.150.0 \
+  -- \
+  traces \
+  --otlp-insecure \
+  --rate 10 \
+  --duration 30s \
+  --otlp-endpoint alloy.alloy.svc.cluster.local:4317
+
+
+trace flow is
+
+telemetrygen
+      │
+      │ OTLP gRPC :4317
+      ▼
+Alloy OTLP Receiver
+      │
+      ▼
+Batch Processor
+      │
+      ▼
+Tempo
+      │
+      ▼
+Grafana
