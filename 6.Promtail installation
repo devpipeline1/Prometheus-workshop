@@ -15,12 +15,13 @@ Flask application
        v
     Grafana
 
-
+To collect logs we need to install and configure promtail in application server
 
 sudo mkdir -p /opt/promtail
 cd /opt/promtail
 sudo wget -O /opt/promtail/promtail.zip \
-https://github.com/grafana/loki/releases/download/v3.5.0/promtail-linux-amd64.zip
+https://github.com/grafana/loki/releases/download/v3.6.11/promtail-linux-amd64.zip
+
 sudo unzip /opt/promtail/promtail.zip -d /opt/promtail
 sudo mv /opt/promtail/promtail-linux-amd64 /opt/promtail/promtail
 sudo chmod +x /opt/promtail/promtail
