@@ -40,6 +40,8 @@ server:
 positions:
   filename: /var/lib/promtail/positions.yaml
 
+#Loki's server public IP replace in below url
+
 clients:
   - url: http://10.0.2.20:3100/loki/api/v1/push
 
@@ -80,7 +82,14 @@ WantedBy=multi-user.target
 
 
 sudo systemctl daemon-reload
+makesure promtail service is running fine
 
+chmon 777 /var/log/sample-app/app.log
+
+echo "test" >> /var/log/sample-app/app.log
+echo "This is test log which captured on app.log" >> /var/log/sample-app/app.log
+
+when we hit below api, some logs will be generated on /var/log/sample-app/app.log
 Generate application logs
 curl http://localhost:8080/
 curl http://localhost:8080/hello
@@ -93,6 +102,8 @@ for i in {1..20}; do
     sleep 1
 done
 
+Troubleshooting:
+===============
 sudo journalctl -u promtail -n 50 --no-pager
 
 Your Loki EC2 Security Group needs:
