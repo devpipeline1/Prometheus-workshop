@@ -71,6 +71,9 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 
+acvtivate newly created service
+==============================
+sudo systemctl daemon-reload
 
 Provide permissions to Prometheus config files and directories
 ===============================================================
