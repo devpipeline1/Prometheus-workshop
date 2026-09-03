@@ -1410,3 +1410,1089 @@ http://localhost:9090
                                    │
                                    ▼
                                  Grafana
+
+
+Install Grafana
+===============
+Add Grafana Helm repository
+helm repo add grafana https://grafana.github.io/helm-charts
+
+helm repo update
+helm search repo grafana/grafana
+
+vi grafana-values.yaml
+
+# ============================================================
+# Grafana Configuration
+# ============================================================
+
+replicas: 1
+
+persistence:
+  enabled: true
+  storageClassName: gp3
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+
+service:
+  type: ClusterIP
+
+adminUser: admin
+
+# Change this password if desired
+adminPassword: Admin@12345
+
+serviceAccount:
+  create: true
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+
+    datasources:
+      - name: Thanos
+        type: prometheus
+        access: proxy
+
+        url: http://thanos-query.monitoring.svc.cluster.local:9090
+
+        isDefault: true
+
+        editable: true
+
+        jsonData:
+          timeInterval: 30s
+
+
+helm upgrade --install grafana \
+  grafana/grafana \
+  --namespace monitoring \
+  --create-namespace \
+  -f grafana-values.yaml
+
+kubectl get pods -n monitoring
+kubectl get pvc -n monitoring
+
+kubectl port-forward \
+  -n monitoring \
+  svc/grafana \
+  3000:80
+
+
+
+Verify Thanos datasource
+
+Connections
+     ↓
+Data sources
+     ↓
+Thanos
+
+You should see the datasource URL:
+http://thanos-query.monitoring.svc.cluster.local:9090
+
+
+Test Prometheus metrics through Thanos
+
+prometheus_build_info
+kube_node_info
+
+
+This confirms the complete query path:
+
+Grafana
+   │
+   ▼
+Thanos Query
+   │
+   ├── Prometheus HA Sidecars
+   │
+   └── Store Gateway
+          │
+          ▼
+        Amazon S3
+
+
+
+Now, we will configure the final major component that is application
+
+We will do this in two parts:
+
+Part A — Application Cluster
+Create Application EKS
+Configure kubectl
+Install EBS CSI
+Create gp3 StorageClass
+Install AWS Load Balancer Controller
+Deploy Online Boutique
+Expose frontend
+
+
+Part B — Monitoring Connection
+Enable Prometheus Remote Write Receiver
+Create private/internal access from Application VPC to Monitoring EKS
+Install Grafana Alloy
+Configure Alloy Kubernetes discovery
+Configure Alloy scraping
+Configure Alloy Remote Write
+Verify metrics in Prometheus
+Verify metrics in Thanos
+Verify metrics in Grafana
+
+
+Set application cluster variable setup
+
+export AWS_REGION=ap-south-1
+
+export APP_CLUSTER_NAME=application-eks
+
+export ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account \
+  --output text)
+
+echo $AWS_REGION
+echo $APP_CLUSTER_NAME
+echo $ACCOUNT_ID
+
+
+Check Application VPC
+
+aws ec2 describe-vpcs \
+  --region $AWS_REGION \
+  --query "Vpcs[*].[VpcId,CidrBlock,Tags]" \
+  --output table
+
+set application VPC 
+export APP_VPC_ID=vpc-xxxxxxxxxxxxxxxxx
+
+echo $APP_VPC_ID
+
+vi application-eks.yaml
+=======================
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: application-eks
+  region: ap-south-1
+
+vpc:
+  id: vpc-0ca2f92262ad35666
+  subnets:
+    private:
+      ap-south-1a:
+        id: subnet-09e714d6812bc124c
+      ap-south-1b:
+        id: subnet-00a197fa8b3fcee97
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: application-ng
+    instanceType: t3.large
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 5
+
+    privateNetworking: true
+
+    volumeSize: 30
+    volumeType: gp3
+
+
+eksctl create cluster \
+  -f application-eks.yaml
+
+Configure kubectl
+
+aws eks update-kubeconfig \
+  --region $AWS_REGION \
+  --name $APP_CLUSTER_NAME
+
+kubectl config current-context
+
+kubectl get nodes -o wide
+
+Verify Application Cluster OIDC
+eksctl utils associate-iam-oidc-provider \
+  --cluster $APP_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --approve
+
+Expected:
+
+IAM Open ID Connect provider is already associated
+
+
+
+Install EBS CSI Driver
+======================
+
+eksctl create iamserviceaccount \
+  --cluster $APP_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --namespace kube-system \
+  --name ebs-csi-controller-sa \
+  --role-name AmazonEKS_EBS_CSI_DriverRole_application \
+  --role-only \
+  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
+  --approve
+
+Install the addon:
+aws eks create-addon \
+  --cluster-name $APP_CLUSTER_NAME \
+  --addon-name aws-ebs-csi-driver \
+  --service-account-role-arn arn:aws:iam::$ACCOUNT_ID:role/AmazonEKS_EBS_CSI_DriverRole_application \
+  --region $AWS_REGION
+
+
+Verify:
+kubectl get pods -n kube-system | grep ebs
+
+
+vi gp3-storageclass.yaml
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+
+metadata:
+  name: gp3
+
+provisioner: ebs.csi.aws.com
+
+parameters:
+  type: gp3
+
+allowVolumeExpansion: true
+
+volumeBindingMode: WaitForFirstConsumer
+
+reclaimPolicy: Delete
+
+kubectl apply -f gp3-storageclass.yaml
+
+kubectl get storageclass
+
+Install AWS Load Balancer Controller
+=====================================
+
+Create IAM policy file: (Already have)
+url -o iam_policy.json \
+https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+(Below Policy also alredy we have)
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy-application \
+  --policy-document file://iam_policy.json
+
+but we need to install the AWS Load Balancer Controller in the Application EKS cluster as well
+
+Monitoring EKS
+└── AWS Load Balancer Controller ✅ Already installed
+
+Application EKS
+└── AWS Load Balancer Controller ❌ Needs installation
+
+set Ploicy ARN
+export LBC_POLICY_ARN=$(aws iam list-policies \
+  --scope Local \
+  --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy-application'].Arn | [0]" \
+  --output text)
+
+echo $LBC_POLICY_ARN
+
+
+Create IRSA for application cluster:
+
+eksctl create iamserviceaccount \
+  --cluster $APP_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole-application \
+  --attach-policy-arn $LBC_POLICY_ARN \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+echo $APP_VPC_ID
+
+helm repo add eks https://aws.github.io/eks-charts
+
+helm repo update
+
+Install AWS Load Balancer:
+
+helm upgrade --install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --set clusterName=$APP_CLUSTER_NAME \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=$AWS_REGION \
+  --set vpcId=$APP_VPC_ID
+
+kubectl get deployment -n kube-system aws-load-balancer-controller
+
+
+Deploy Online Boutique application
+==================================
+
+git clone   https://github.com/GoogleCloudPlatform/microservices-demo.git
+
+cd microservices-demo
+
+Create Namespace:
+kubectl create namespace online-boutique
+
+kubectl apply -n online-boutique -f ./release/kubernetes-manifests.yaml
+
+kubectl get pods   -n online-boutique
+
+ kubectl get svc  -n online-boutique
+
+update frontend-external service to access from browser:
+=======================================================
+
+vi frontend-loadbalancer.yaml 
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-external
+  namespace: online-boutique
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+
+kubectl delete svc frontend-external -n online-boutique
+
+kubectl create -f frontend-loadbalancer.yaml
+ kubectl get svc  -n online-boutique
+
+take the dns name and try to access from browser or gitbash
+
+curl -vk http://k8s-onlinebo-frontend-d26f7879a1-86634291672004b5.elb.ap-south-1.amazonaws.com
+
+Then open this in your browser:
+
+http://k8s-onlinebo-frontend-d26f7879a1-86634291672004b5.elb.ap-south-1.amazonaws.com
+
+
+
+NOW THE IMPORTANT PART — CONNECT APPLICATION → MONITORING
+Alloy should not directly talk to Thanos.
+
+Application Pods
+       ↓
+Grafana Alloy
+       ↓
+Prometheus Remote Write
+       ↓
+Monitoring Prometheus
+       ↓
+Thanos Sidecar
+       ↓
+Amazon S3
+       ↓
+Thanos Query
+       ↓
+Grafana
+
+
+
+================================================================================
+Connect Application EKS to Monitoring EKS
+
+The architecture will be:
+
+Online Boutique Application
+        │
+        ▼
+Application EKS
+        │
+        │ Kubernetes Metrics
+        ▼
+Grafana Alloy
+        │
+        │ remote_write
+        ▼
+Monitoring EKS Prometheus HA
+        │
+        ▼
+Thanos Sidecar
+        │
+        ▼
+Amazon S3
+        │
+        ▼
+Thanos Store Gateway
+        │
+        ▼
+Thanos Query
+        │
+        ▼
+Grafana
+
+STEP 1: Verify VPC peering between Application and Monitoring VPCs
+STEP 2: Configure security groups/routes if required
+STEP 3: Install Grafana Alloy in Application EKS
+STEP 4: Configure Alloy to collect Kubernetes/application metrics
+STEP 5: Configure Alloy remote_write to Monitoring Prometheus
+STEP 6: Verify metrics reach Prometheus
+STEP 7: Verify metrics through Thanos Query
+STEP 8: Configure Grafana dashboards
+STEP 9: Perform complete end-to-end testing
+
+
+
+We will first verify:
+
+Application VPC 10.10.0.0/16
+        │
+        │ VPC Peering
+        ▼
+Monitoring VPC 10.20.0.0/16
+
+
+echo "Application VPC: $APP_VPC_ID"
+echo "Monitoring VPC:  $MON_VPC_ID"
+
+
+Verify Both VPC CIDRs
+====================
+$ aws ec2 describe-vpcs \
+  --vpc-ids $APP_VPC_ID $MON_VPC_ID \
+  --region $AWS_REGION \
+  --query 'Vpcs[*].[VpcId,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+
+--------------------------------------------------------------
+|                        DescribeVpcs                        |
++-----------------------+----------------+-------------------+
+|  vpc-0ca2f92262ad35666|  10.10.0.0/16  |  application-vpc  |
+|  vpc-0c8bbd1be0daa4adb|  10.20.0.0/16  |  monitoring-vpc   |
++-----------------------+----------------+-------------------+
+
+
+Check Whether VPC Peering Already Exists (THis alredy we did as part of network setup)
+
+aws ec2 describe-vpc-peering-connections \
+  --region $AWS_REGION \
+  --query "VpcPeeringConnections[?RequesterVpcInfo.VpcId=='$APP_VPC_ID' || AccepterVpcInfo.VpcId=='$APP_VPC_ID'].[VpcPeeringConnectionId,Status.Code,RequesterVpcInfo.VpcId,AccepterVpcInfo.VpcId]" \
+  --output table
+
+---------------------------------------------------------------------------------------
+|                            DescribeVpcPeeringConnections                            |
++-----------------------+---------+-------------------------+-------------------------+
+|  pcx-0f03d03e56b2b5c67|  active |  vpc-0ca2f92262ad35666  |  vpc-0c8bbd1be0daa4adb  |
++-----------------------+---------+-------------------------+-------------------------+
+
+
+Get Private Route Tables (this has done as part of netowkr setup)
+list Application VPC route tables:
+
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=$APP_VPC_ID" \
+  --region $AWS_REGION \
+  --query 'RouteTables[*].[RouteTableId,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+List Monitoring VPC:
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=$MON_VPC_ID" \
+  --region $AWS_REGION \
+  --query 'RouteTables[*].[RouteTableId,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+
+Check Application VPC Route to Monitoring VPC
+============================================
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=$APP_VPC_ID" \
+  --region $AWS_REGION \
+  --query "RouteTables[*].[RouteTableId,Routes[?DestinationCidrBlock=='10.20.0.0/16']]" \
+  --output json
+
+You should see a route similar to:
+
+10.20.0.0/16 → pcx-xxxxxxxx
+
+
+Check Monitoring VPC Route to Application VPC
+============================================
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=$MON_VPC_ID" \
+  --region $AWS_REGION \
+  --query "RouteTables[*].[RouteTableId,Routes[?DestinationCidrBlock=='10.10.0.0/16']]" \
+  --output json
+
+Expected:
+
+10.10.0.0/16 → pcx-xxxxxxxx
+
+
+Verify EKS Cluster Security Groups (Please run this)
+==================================
+Get Application cluster security group:
+
+export APP_CLUSTER_SG=$(aws eks describe-cluster \
+  --name $APP_CLUSTER \
+  --region $AWS_REGION \
+  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
+  --output text)
+
+echo $APP_CLUSTER_SG
+
+
+Get Monitoring cluster security group:
+
+export MON_CLUSTER_SG=$(aws eks describe-cluster \
+  --name $MON_CLUSTER \
+  --region $AWS_REGION \
+  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
+  --output text)
+
+echo $MON_CLUSTER_SG
+
+
+
+Our connection will be
+
+┌──────────────────────────────────────┐
+│ APPLICATION EKS                      │
+│                                      │
+│ Online Boutique                      │
+│                                      │
+│ Pods                                 │
+│   │                                  │
+│   ▼                                  │
+│ Grafana Alloy                        │
+│   │                                  │
+│   │ Prometheus remote_write          │
+└───┼──────────────────────────────────┘
+    │
+    │ VPC Peering
+    │
+┌───▼──────────────────────────────────┐
+│ MONITORING EKS                       │
+│                                      │
+│ Prometheus HA                        │
+│   │                                  │
+│   ├── Thanos Sidecar                 │
+│   │        │                         │
+│   │        ▼                         │
+│   │      Amazon S3                   │
+│   │                                  │
+│   ▼                                  │
+│ Thanos Query                         │
+│   │                                  │
+│   ▼                                  │
+│ Grafana                              │
+└──────────────────────────────────────┘
+
+
+
+
+Application VPC
+vpc-xxxxxxxxxxxxxx
+10.10.0.0/16
+
+        │
+        │ pcx-01xxxxxxxxxxxxx
+        │ ACTIVE
+        ▼
+
+Monitoring VPC
+vpc-xxxxxxxxxxxxx
+10.20.0.0/16
+
+
+
+Check Prometheus Services
+
+switch to monitoring cluster 
+aws eks update-kubeconfig --region $AWS_REGION --name $MON_CLUSTER
+
+kubectl config current-context
+
+kubectl get svc -n monitoring
+
+kubectl get svc -n monitoring | grep prometheus
+
+
+Enable Remote Write Receiver
+We need Application EKS → Alloy → Monitoring Prometheus.
+
+Prometheus must accept remote-write metrics.
+
+so open prometheus-values.yaml and add enableRemoteWriteReceiver: true
+
+  prometheusSpec:
+    replicas: 2
+    enableRemoteWriteReceiver: true
+    retention: 24h
+    retentionSize: 20GB
+    externalLabels:
+      cluster: monitoring-eks
+    replicaExternalLabelName: replica
+
+Upgrade Prometheus
+
+helm upgrade kube-prometheus-stack \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  -f prometheus-values.yaml
+
+Prometheus Pods should be recreated
+
+kubectl get pods -n monitoring
+
+Verify Remote Write Receiver
+=============================
+kubectl port-forward   -n monitoring   svc/kube-prometheus-stack-prometheus   9090:9090
+
+open browser: http://localhost:9090/api/v1/status/flags
+
+search for "web.enable-remote-write-receiver":"true"
+
+
+Expose Prometheus Privately to Application EKS
+
+Because Application and Monitoring are different Kubernetes clusters, we need a private endpoint.
+We will use an internal AWS Network Load Balancer:
+
+
+┌───────────────────────────────┐
+│ Application EKS               │
+│                               │
+│ Grafana Alloy                 │
+│                               │
+│ remote_write                  │
+└───────────────┬───────────────┘
+                │
+                │ VPC Peering
+                │
+                ▼
+┌───────────────────────────────┐
+│ Monitoring VPC                │
+│                               │
+│ Internal AWS NLB              │
+│                               │
+│ Prometheus Remote Write       │
+└───────────────┬───────────────┘
+                │
+                ▼
+         Prometheus HA
+                │
+                ▼
+          Thanos Sidecar
+                │
+                ▼
+               S3
+                │
+                ▼
+          Thanos Query
+                │
+                ▼
+             Grafana
+
+
+We should now expose Prometheus privately using an internal AWS Load Balancer, so Alloy in Application EKS can send metrics through VPC peering.
+
+
+Create Internal LoadBalancer Service
+====================================
+
+vi prometheus-internal-lb.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-remote-write
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+  ports:
+    - name: http
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
+
+kubectl apply -f prometheus-internal-lb.yaml
+
+kubectl get svc prometheus-remote-write  -n monitoring
+
+the expected output:
+NAME                      TYPE           CLUSTER-IP       EXTERNAL-IP                                                                      PORT(S)          AGE
+prometheus-remote-write   LoadBalancer   172.20.158.186   k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com   9090:32428/TCP   16s
+
+Get the Internal NLB DNS Name in variable
+
+export PROMETHEUS_NLB=$(kubectl get svc prometheus-remote-write \
+  -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+echo $PROMETHEUS_NLB
+
+Save this hostname. It will be the endpoint Alloy uses.
+
+Test Prometheus Through the Internal Load Balancer
+curl http://$PROMETHEUS_NLB:9090/-/ready
+
+expected output: curl: (28) Failed to connect to k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com port 9090 after 21257 ms: Could not connect to server
+
+Because your Windows Git Bash cannot resolve the private internal NLB, that is normal because your laptop is outside the VPC.
+
+
+We will test connectivity from inside Application EKS.
+Switch to Application Cluster
+aws eks update-kubeconfig --region $AWS_REGION  --name $APP_CLUSTER
+
+kubectl config current-context
+
+Create a Temporary Network Test Pod
+kubectl run network-test   --image=curlimages/curl   --restart=Never   -- sleep 3600
+
+kubectl get pods
+
+kubectl exec -it network-test --  curl -v http://$PROMETHEUS_NLB:9090/-/ready
+
+Expected:
+
+Prometheus is Ready.
+
+
+Its confirmed the flow is working fine
+
+Application EKS
+      ↓
+Application VPC
+      ↓
+VPC Peering
+      ↓
+Monitoring VPC
+      ↓
+Internal NLB
+      ↓
+Prometheus HA
+
+
+Install Grafana Alloy (Once the network test succeeds, install Alloy in Application EKS.)
+=====================
+
+Application EKS
+      │
+      ├── Kubernetes metrics
+      ├── Node metrics
+      └── Application metrics
+               │
+               ▼
+          Grafana Alloy
+               │
+               │ Remote Write
+               ▼
+     Internal Prometheus NLB
+               │
+               ▼
+       Monitoring Prometheus HA
+               │
+               ▼
+          Thanos Sidecar
+               │
+               ▼
+              S3
+               │
+               ▼
+         Thanos Query
+               │
+               ▼
+            Grafana
+
+Confirm you are in application cluster
+kubectl config current-context
+
+add helm repo
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+kubectl create namespace alloy
+
+vi alloy-values.yaml
+
+alloy:
+  configMap:
+    create: true
+    content: |
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      prometheus.scrape "kubernetes_pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        forward_to = [
+          prometheus.remote_write.monitoring.receiver,
+        ]
+      }
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://${PROMETHEUS_NLB}:9090/api/v1/write"
+        }
+      }
+
+sed -i "s|PROMETHEUS_NLB|$PROMETHEUS_NLB|g" alloy-values.yaml
+
+helm upgrade --install alloy   grafana/alloy   --namespace alloy   --create-namespace   -f alloy-values.yaml
+
+
+$ kubectl get pods -n alloy
+NAME          READY   STATUS    RESTARTS   AGE
+alloy-bzvwj   2/2     Running   0          30s
+alloy-hvgkf   2/2     Running   0          30s
+alloy-wjpm8   2/2     Running   0          30s
+
+
+Check Alloy Logs
+ kubectl logs -n alloy alloy-bzvwj --tail=100
+expected output:
+
+$ kubectl logs -n alloy alloy-bzvwj --tail=100
+ts=2026-09-02T21:42:40.539564168Z level=info msg="Alloy is starting"
+ts=2026-09-02T21:42:40.539679306Z level=info msg="boringcrypto enabled" enabled=false
+ts=2026-09-02T21:42:40.539964227Z level=info msg="memory is not limited, skipping" package=github.com/KimMachineGun/automemlimit/memlimit
+ts=2026-09-02T21:42:40.540021929Z level=info msg="no peer discovery configured: both join and discover peers are empty" service=cluster
+ts=2026-09-02T21:42:40.541269344Z level=info msg="running usage stats reporter"
+ts=2026-09-02T21:42:40.541357254Z level=info msg="starting complete graph evaluation" controller_path=/ controller_id="" trace_id=c5ec98d9a476b93c84c81be6f8609613
+ts=2026-09-02T21:42:40.541370214Z level=info msg="finished node evaluation" controller_path=/ controller_id="" trace_id=c5ec98d9a476b93c84c81be6f8609613 node_id=tracing duration=6.149µs
+
+
+
+verify that Prometheus is actually accepting the metrics
+for this, first switch to monitor cluster
+
+aws eks update-kubeconfig   --region $AWS_REGION   --name $MON_CLUSTER
+ kubectl config current-context
+
+kubectl logs \
+  prometheus-kube-prometheus-stack-prometheus-0 \
+  -n monitoring \
+  -c prometheus \
+  --tail=100
+
+
+
+Verify metrics arrived from Application Cluster
+Port-forward Prometheus temporarily:
+kubectl port-forward \
+  -n monitoring \
+  svc/kube-prometheus-stack-prometheus \
+  9090:9090
+
+
+
+current Alloy configuration uses:
+
+discovery.kubernetes "default" {
+  role = "pod"
+}
+prometheus.scrape "kubernetes" {
+  targets = discovery.kubernetes.default.targets
+}
+This discovers all pods, but not every pod automatically exposes Prometheus metrics.
+Many pods will not have a metrics endpoint, so the next improvement should be to configure Alloy to scrape pods based on standard annotations
+
+
+
+enableRemoteWriteReceiver: true ✅
+Prometheus is healthy and ready on port 9090 ✅
+Alloy is running on all 3 application EKS nodes ✅
+Alloy can reach the monitoring Prometheus NLB through VPC peering ✅
+
+
+current Alloy configuration discovers and scrapes pods only. It does not scrape Kubernetes node metrics such as:
+
+node_cpu_seconds_total
+node memory metrics
+filesystem metrics
+kubelet metrics
+
+
+
+Replace Alloy configuration with a proper Kubernetes monitoring configuration
+
+make sure you are in application cluster.
+
+Delete the current Alloy installation
+
+Get your monitoring Prometheus NLB:
+go to monitoring cluster
+
+ kubectl get svc prometheus-remote-write -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+PROMETHEUS_NLB=k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com
+
+Then switch back to Application EKS:
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name application-eks
+
+cat <<'EOF' > alloy-values.yaml
+alloy:
+  configMap:
+    create: true
+    content: |
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      discovery.relabel "node_metrics" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          target_label = "__address__"
+          replacement  = "kubernetes.default.svc:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/${1}/proxy/metrics"
+        }
+      }
+
+      prometheus.scrape "nodes" {
+        job_name        = "kubernetes-nodes"
+        targets         = discovery.relabel.node_metrics.output
+        forward_to      = [prometheus.remote_write.monitoring.receiver]
+        scrape_interval = "30s"
+        scrape_timeout  = "20s"
+        scheme          = "https"
+
+        tls_config {
+          insecure_skip_verify = true
+        }
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_metrics" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+          action        = "keep"
+          regex         = "true"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
+          action        = "replace"
+          target_label  = "__metrics_path__"
+          regex         = "(.+)"
+        }
+
+        rule {
+          source_labels = [
+            "__address__",
+            "__meta_kubernetes_pod_annotation_prometheus_io_port",
+          ]
+          action        = "replace"
+          regex         = "([^:]+)(?::[0-9]+)?;([0-9]+)"
+          replacement   = "${1}:${2}"
+          target_label  = "__address__"
+        }
+      }
+
+      prometheus.scrape "pods" {
+        job_name        = "kubernetes-pods"
+        targets         = discovery.relabel.pod_metrics.output
+        forward_to      = [prometheus.remote_write.monitoring.receiver]
+        scrape_interval = "30s"
+      }
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com:9090/api/v1/write"
+        }
+      }
+
+controller:
+  type: daemonset
+
+serviceAccount:
+  create: true
+
+rbac:
+  create: true
+EOF
+
+
+Replace the Prometheus NLB placeholder
+
+sed -i 's/PROMETHEUS_NLB_PLACEHOLDER/k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com/g' alloy-values.yaml
+
+
+helm upgrade --install alloy grafana/alloy \
+  -n alloy \
+  --create-namespace \
+  -f alloy-values.yaml
+
+
+kubectl get pods -n alloy
+
+ kubectl logs   -n alloy   alloy-cl4ll  -c alloy   --tail=100
+
+finished node evaluation ... prometheus.scrape.nodes
+finished node evaluation ... prometheus.scrape.pods
+Starting WAL watcher ... remote_write
+
+
+kubectl logs \
+  -n alloy \
+  alloy-cl4ll \
+  -c alloy \
+  --since=2m | grep -Ei "error|warn|failed|out.of.order"
+
+If there is no output, that is good.
+
+now again verify
+
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name monitoring-eks
+
+kubectl port-forward \
+  -n monitoring \
+  svc/kube-prometheus-stack-prometheus \
+  9090:9090
+
+
+Your Alloy configuration is successfully discovering the Application EKS nodes, but it cannot scrape kubelet metrics through the Kubernetes API server because Alloy does not trust the Kubernetes API server certificate.
+
