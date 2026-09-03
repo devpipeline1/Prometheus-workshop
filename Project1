@@ -2494,5 +2494,794 @@ kubectl port-forward \
   9090:9090
 
 
-Your Alloy configuration is successfully discovering the Application EKS nodes, but it cannot scrape kubelet metrics through the Kubernetes API server because Alloy does not trust the Kubernetes API server certificate.
+ kubectl port-forward -n alloy alloy-7bvp6 12345:12345
 
+open UI and check application node status
+
+
+Check which ServiceAccount Alloy uses
+
+kubectl get deployment alloy \
+  -n alloy \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}'
+
+echo
+
+You will probably see:
+
+alloy
+
+kubectl get serviceaccount -n alloy
+
+Create RBAC permissions for Alloy
+cat <<'EOF' > alloy-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-metrics-reader
+rules:
+  # Discover Kubernetes resources
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - nodes/metrics
+      - services
+      - endpoints
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+
+  # Discover EndpointSlices
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+
+  # Access non-resource metrics endpoints
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+EOF
+
+
+kubectl apply -f alloy-rbac.yaml
+
+Expected:
+
+clusterrole.rbac.authorization.k8s.io/alloy-metrics-reader created
+
+
+Create ClusterRoleBinding
+=========================
+automatically get the ServiceAccount name:
+export ALLOY_SA=$(kubectl get deployment alloy \
+  -n alloy \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}')
+
+echo $ALLOY_SA
+
+
+cat <<EOF > alloy-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: ${ALLOY_SA}
+    namespace: alloy
+EOF
+
+
+kubectl apply -f alloy-clusterrolebinding.yaml
+
+kubectl get clusterrolebinding alloy-metrics-reader
+
+kubectl auth can-i get nodes \
+  --as=system:serviceaccount:alloy:$ALLOY_SA
+
+kubectl auth can-i get nodes/proxy \
+  --as=system:serviceaccount:alloy:$ALLOY_SA
+
+kubectl auth can-i get nodes/metrics \
+  --as=system:serviceaccount:alloy:$ALLOY_SA
+
+
+Restart Alloy
+kubectl rollout restart deployment alloy \
+  -n alloy
+
+kubectl rollout status deployment alloy \
+  -n alloy
+kubectl get pods -n alloy
+
+Check Alloy targets again
+
+kubectl port-forward -n alloy svc/alloy  12345:12345
+
+http://127.0.0.1:12345
+
+prometheus.scrape.nodes
+
+After the RBAC fix:
+
+health: up
+
+
+Verify metrics reach Monitoring Prometheus
+
+
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name monitoring-eks
+
+
+
+Install Loki for application logs
+
+Application EKS
+│
+├── Metrics ──> Alloy ──> Prometheus ──> Thanos ──> S3 ──> Grafana
+│
+├── Logs ─────> Alloy ──> Loki ───────────────────────────> Grafana
+│
+└── Traces ───> Alloy ──> Tempo ──────────────────────────> Grafana
+
+
+Grafana Alloy can collect Kubernetes pod logs and forward them to Loki, while OTLP receivers in Alloy can receive traces and forward them to Tempo
+
+
+export AWS_REGION=ap-south-1
+export CLUSTER_NAME=monitoring-eks
+export ACCOUNT_ID=045667250694
+
+export LOKI_CHUNKS_BUCKET=application-loki-chunks-1234
+export LOKI_RULER_BUCKET=application-loki-ruler-1234
+
+export LOKI_NAMESPACE=loki
+export LOKI_SERVICE_ACCOUNT=loki
+export LOKI_ROLE_NAME=LokiS3Role
+export LOKI_POLICY_NAME=LokiS3Policy
+
+
+cat > loki-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LokiListBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${LOKI_CHUNKS_BUCKET}",
+        "arn:aws:s3:::${LOKI_RULER_BUCKET}"
+      ]
+    },
+    {
+      "Sid": "LokiObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${LOKI_CHUNKS_BUCKET}/*",
+        "arn:aws:s3:::${LOKI_RULER_BUCKET}/*"
+      ]
+    }
+  ]
+}
+EOF
+
+
+aws iam create-policy \
+  --policy-name ${LOKI_POLICY_NAME} \
+  --policy-document file://loki-s3-policy.json
+
+export LOKI_POLICY_ARN=arn:aws:iam::${ACCOUNT_ID}:policy/${LOKI_POLICY_NAME}
+
+
+Check EKS OIDC
+
+eksctl utils associate-iam-oidc-provider \
+  --cluster ${CLUSTER_NAME} \
+  --region ${AWS_REGION} \
+  --approve
+
+Create Loki IRSA service account
+
+eksctl create iamserviceaccount \
+  --cluster ${CLUSTER_NAME} \
+  --region ${AWS_REGION} \
+  --namespace ${LOKI_NAMESPACE} \
+  --name ${LOKI_SERVICE_ACCOUNT} \
+  --role-name ${LOKI_ROLE_NAME} \
+  --attach-policy-arn ${LOKI_POLICY_ARN} \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+Now verify:
+
+kubectl get serviceaccount loki -n loki -o yaml
+
+You must see something similar to:
+
+annotations:
+  eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/LokiS3Role
+
+
+
+Create S3 buckets
+$ export AWS_REGION=ap-south-1
+
+export LOKI_CHUNKS_BUCKET=application-loki-chunks-1234
+export LOKI_RULER_BUCKET=application-loki-ruler-1234
+
+
+$ aws s3api create-bucket \
+  --bucket $LOKI_CHUNKS_BUCKET \
+  --region $AWS_REGION \
+  --create-bucket-configuration LocationConstraint=$AWS_REGION
+
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject1
+$ aws s3api create-bucket \
+  --bucket $LOKI_RULER_BUCKET \
+  --region $AWS_REGION \
+  --create-bucket-configuration LocationConstraint=$AWS_REGION
+
+
+
+Create loki-vlaues.yaml
+
+cat > loki-values.yaml <<EOF
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  storage:
+    type: s3
+
+    bucketNames:
+      chunks: application-loki-chunks-1234
+      ruler: application-loki-ruler-1234
+
+    s3:
+      region: ap-south-1
+
+serviceAccount:
+  create: false
+  name: loki
+
+singleBinary:
+  replicas: 1
+
+  persistence:
+    enabled: true
+    size: 10Gi
+
+read:
+  replicas: 0
+
+write:
+  replicas: 0
+
+backend:
+  replicas: 0
+
+gateway:
+  enabled: false
+
+lokiCanary:
+  enabled: false
+
+test:
+  enabled: false
+
+chunksCache:
+  enabled: false
+
+resultsCache:
+  enabled: false
+
+minio:
+  enabled: false
+EOF
+
+
+Install Loki
+
+helm upgrade --install loki grafana/loki \
+  --namespace loki \
+  --create-namespace \
+  -f loki-values.yaml
+
+
+$ kubectl get pods -n loki
+NAME     READY   STATUS    RESTARTS   AGE
+loki-0   2/2     Running   0          102s
+
+$ kubectl get pod loki-0 -n loki \
+  -o jsonpath='{.spec.serviceAccountName}'
+
+expected:
+loki
+
+$ kubectl describe sa loki -n loki
+Name:                loki
+Namespace:           loki
+Labels:              app.kubernetes.io/managed-by=eksctl
+Annotations:         eks.amazonaws.com/role-arn: arn:aws:iam::045667250694:role/LokiS3Role
+Image pull secrets:  <none>
+Events:              <none>
+
+
+
+$ kubectl get svc -n loki
+NAME              TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)             AGE
+loki              ClusterIP   172.20.114.153   <none>        3100/TCP,9095/TCP   3m8s
+loki-headless     ClusterIP   None             <none>        3100/TCP            3m8s
+loki-memberlist   ClusterIP   None             <none>        7946/TCP            3m8s
+
+
+Verify Loki health
+
+kubectl port-forward \
+  -n loki \
+  svc/loki 3100:3100
+
+
+curl http://localhost:3100/ready
+
+curl http://localhost:3100/loki/api/v1/labels
+
+Verify S3 access
+kubectl logs -n loki loki-0 -c loki --tail=50
+kubectl logs -n loki loki-0 -c loki --tail=200 | grep -iE "access denied|error|failed|s3"
+
+The important lines are:
+
+level=info msg="Loki started"
+level=info msg="joining memberlist cluster succeeded" reached_nodes=1
+
+
+Check Loki endpoint connectivity from Application EKS
+=====================================================
+
+$ aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name monitoring-eks
+Updated context arn:aws:eks:ap-south-1:045667250694:cluster/monitoring-eks in C:\Users\Windows\.kube\config
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject1
+$ kubectl get svc -n loki
+NAME              TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)             AGE
+loki              ClusterIP   172.20.114.153   <none>        3100/TCP,9095/TCP   36m
+loki-headless     ClusterIP   None             <none>        3100/TCP            36m
+loki-memberlist   ClusterIP   None             <none>        7946/TCP            36m
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject1
+$ kubectl get svc loki -n loki -o wide
+NAME   TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)             AGE   SELECTOR
+loki   ClusterIP   172.20.114.153   <none>        3100/TCP,9095/TCP   37m   app.kubernetes.io/component=single-binary,app.kubernetes.io/instance=loki,app.kubernetes.io/name=loki
+
+
+Create an internal Loki LoadBalancer
+==================================
+Your Alloy runs in application-eks, so you should expose Loki through a private/internal LoadBalancer that Application EKS can reach through your VPC connectivity.
+
+ aws eks update-kubeconfig   --region ap-south-1   --name monitoring-eks
+
+vi loki-internal-lb.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-internal
+  namespace: loki
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      protocol: TCP
+  selector:
+    app.kubernetes.io/component: single-binary
+    app.kubernetes.io/instance: loki
+    app.kubernetes.io/name: loki
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject1
+$ kubectl apply -f loki-internal-lb.yaml
+service/loki-internal created
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject1
+$ kubectl get svc -n loki
+NAME              TYPE           CLUSTER-IP       EXTERNAL-IP                                                                  PORT(S)             AGE
+loki              ClusterIP      172.20.114.153   <none>                                                                       3100/TCP,9095/TCP   49m
+loki-headless     ClusterIP      None             <none>                                                                       3100/TCP            49m
+loki-internal     LoadBalancer   172.20.223.250   k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com   3100:31149/TCP      31s
+loki-memberlist   ClusterIP      None             <none>                                                                       7946/TCP            49m
+
+Get the exact endpoint
+kubectl get svc loki-internal -n loki \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com
+now you update this into alloy endpoint for logs
+
+
+Get your current Alloy configuration
+====================================
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name application-eks
+
+kubectl get configmap alloy -n alloy \
+  -o jsonpath='{.data.config\.alloy}' > current-alloy.alloy
+
+cat current-alloy.alloy
+
+vi alloy-values.yaml
+
+$ cat alloy-values.yaml
+# ============================================================
+# ALLOY CONTROLLER
+# KEEP ALLOY AS DEPLOYMENT
+# ============================================================
+
+controller:
+  type: deployment
+  replicas: 1
+
+
+# ============================================================
+# ALLOY CONFIGURATION
+# ============================================================
+
+alloy:
+  configMap:
+    create: true
+
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+
+      // ============================================================
+      // KUBERNETES NODE METRICS
+      // ============================================================
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      discovery.relabel "node_metrics" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          target_label = "__address__"
+          replacement  = "kubernetes.default.svc:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/${1}/proxy/metrics"
+        }
+      }
+
+      prometheus.scrape "nodes" {
+        job_name        = "kubernetes-nodes"
+        targets         = discovery.relabel.node_metrics.output
+        forward_to      = [prometheus.relabel.application_cluster.receiver]
+
+        scrape_interval = "30s"
+        scrape_timeout  = "20s"
+        scheme          = "https"
+
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        tls_config {
+          insecure_skip_verify = true
+        }
+      }
+
+
+      // ============================================================
+      // KUBERNETES POD METRICS
+      // ============================================================
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_metrics" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_scrape",
+          ]
+
+          action = "keep"
+          regex  = "true"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_path",
+          ]
+
+          action       = "replace"
+          target_label = "__metrics_path__"
+          regex        = "(.+)"
+        }
+
+        rule {
+          source_labels = [
+            "__address__",
+            "__meta_kubernetes_pod_annotation_prometheus_io_port",
+          ]
+
+          action       = "replace"
+          regex        = "([^:]+)(?::[0-9]+)?;([0-9]+)"
+          replacement  = "${1}:${2}"
+          target_label = "__address__"
+        }
+      }
+
+      prometheus.scrape "pods" {
+        job_name        = "kubernetes-pods"
+        targets         = discovery.relabel.pod_metrics.output
+        forward_to      = [prometheus.relabel.application_cluster.receiver]
+
+        scrape_interval = "30s"
+        scrape_timeout  = "20s"
+      }
+
+
+      // ============================================================
+      // ADD CLUSTER LABEL TO METRICS
+      // ============================================================
+
+      prometheus.relabel "application_cluster" {
+        forward_to = [
+          prometheus.remote_write.monitoring.receiver,
+        ]
+
+        rule {
+          action       = "replace"
+          target_label = "cluster"
+          replacement  = "application-eks"
+        }
+      }
+
+
+      // ============================================================
+      // PROMETHEUS REMOTE WRITE
+      // APPLICATION EKS --> MONITORING PROMETHEUS
+      // ============================================================
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-promethe-bc4a53910b-762e0685c2cb6419.elb.ap-south-1.amazonaws.com:9090/api/v1/write"
+
+          queue_config {
+            capacity             = 10000
+            max_shards           = 10
+            min_shards           = 1
+            max_samples_per_send = 2000
+            batch_send_deadline  = "5s"
+            min_backoff          = "30ms"
+            max_backoff          = "5s"
+          }
+        }
+      }
+
+
+      // ============================================================
+      // KUBERNETES POD LOG DISCOVERY
+      // ============================================================
+
+      discovery.kubernetes "pod_logs" {
+        role = "pod"
+      }
+
+
+      // ============================================================
+      // LOG LABELS
+      // ============================================================
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pod_logs.targets
+
+
+        // Kubernetes namespace
+        rule {
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+          action       = "replace"
+        }
+
+
+        // Pod name
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          target_label = "pod"
+          action       = "replace"
+        }
+
+
+        // Container name
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_container_name",
+          ]
+
+          target_label = "container"
+          action       = "replace"
+        }
+
+
+        // Kubernetes app label
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          target_label = "app"
+          action       = "replace"
+        }
+      }
+
+
+      // ============================================================
+      // COLLECT POD LOGS
+      // ============================================================
+
+      loki.source.kubernetes "pods" {
+        targets = discovery.relabel.pod_logs.output
+
+        forward_to = [
+          loki.process.application_logs.receiver,
+        ]
+      }
+
+
+      // ============================================================
+      // ADD APPLICATION CLUSTER LABEL
+      // ============================================================
+
+      loki.process "application_logs" {
+        stage.static_labels {
+          values = {
+            cluster = "application-eks",
+          }
+        }
+
+        forward_to = [
+          loki.write.monitoring.receiver,
+        ]
+      }
+
+
+      // ============================================================
+      // SEND LOGS TO MONITORING LOKI
+      // ============================================================
+
+      loki.write "monitoring" {
+        endpoint {
+          url = "http://k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+        }
+      }
+
+
+$ helm upgrade alloy grafana/alloy \
+  -n alloy \
+  -f alloy-values.yaml \
+  --force-conflicts
+
+
+Verify connectivity from Application EKS
+
+ aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name application-eks
+
+$ kubectl run curl-test \
+  -n alloy \
+  --image=curlimages/curl:latest \
+  --restart=Never \
+  --rm -it \
+  -- \
+  curl -v http://k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100/ready
+* Host k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100 was resolved.
+* IPv6: (none)
+* IPv4: 10.20.11.181
+*   Trying 10.20.11.181:3100...
+* Established connection to k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com (10.20.11.181 port 3100) from 10.10.12.110 port 50714
+* using HTTP/1.x
+> GET /ready HTTP/1.1
+> Host: k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100
+> User-Agent: curl/8.22.0
+> Accept: */*
+>
+* Request completely sent off
+< HTTP/1.1 200 OK
+< Content-Type: text/plain; charset=utf-8
+< X-Content-Type-Options: nosniff
+< Date: Thu, 03 Sep 2026 12:25:45 GMT
+< Content-Length: 6
+<
+ready
+* Connection #0 to host k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100 left intact
+pod "curl-test" deleted from alloy namespace
+
+
+kubectl run dns-test \
+  -n alloy \
+  --image=busybox:1.36 \
+  --restart=Never \
+  --rm -it \
+  -- nslookup k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com
+
+kubectl get pods -n online-boutique
+
+kubectl logs -n alloy deployment/alloy \
+  -c alloy \
+  --tail=100 | grep -iE "error|failed|loki.write"
+
+kubectl port-forward -n loki svc/loki 3100:3100
+
+Open another terminal and run:
+curl -G -s "http://localhost:3100/loki/api/v1/query_range" \
+  --data-urlencode 'query={cluster="application-eks"}' \
+  --data-urlencode 'limit=20'
+
+Finally Open Grafana and add loki datasource with 
+ loki.write "monitoring" {
+        endpoint {
+          url = "http://k8s-loki-lokiinte-7dd8d30804-f6f2c9e4c55cdc1a.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+        }
