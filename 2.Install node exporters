@@ -61,6 +61,6 @@ It will manage resources in windows
 Go to : https://github.com/prometheus-community/windows_exporter
 Under installation we have “Release page”
 It will take you to : https://github.com/prometheus-community/windows_exporter/releases
-Download: https://github.com/prometheus-community/windows_exporter/releases/download/v0.30.7/windows_exporter-0.30.7-amd64.msi     under “Assets”
+Download: https://github.com/prometheus-community/windows_exporter/releases/download/v0.31.7/windows_exporter-0.31.7-amd64.msi     under “Assets”
 
 <Server IP>:9182/metrics
