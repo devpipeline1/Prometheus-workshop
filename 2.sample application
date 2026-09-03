@@ -55,6 +55,25 @@ def hello():
         "message": "Hello World"
     })
 
+@app.route("/database")
+def database():
+    logger.info("Database endpoint called")
+    # Simulate a DB call
+    return jsonify({
+        "status": "ok",
+        "message": "Database connection simulated"
+    })
+
+@app.route("/slow")
+def slow():
+    logger.info("Slow endpoint called")
+    import time
+    time.sleep(5)  # simulate slow response
+    return jsonify({
+        "status": "ok",
+        "message": "This response was delayed"
+    })
+
 
 @app.route("/error")
 def error():
@@ -123,8 +142,8 @@ After=network.target
 [Service]
 Type=simple
 
-User=ec2-user
-Group=ec2-user
+User=root
+Group=root
 
 WorkingDirectory=/opt/sample-app
 
