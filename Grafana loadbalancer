@@ -1,0 +1,86 @@
+Step 1: Check the Grafana labels and existing service
+
+Run:
+
+kubectl get svc -n monitoring | grep grafana
+
+Then:
+
+kubectl get svc grafana -n monitoring -o yaml
+
+Also check the deployment labels:
+
+kubectl get deployment grafana -n monitoring --show-labels
+
+From your earlier logs, your Grafana pod is:
+
+grafana-746cbdcf77-4mkwh
+
+So first confirm the exact labels before creating the new service.
+
+Step 2: Create a separate Grafana LoadBalancer service
+
+Create:
+
+cat > grafana-lb.yaml <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-external
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3000
+EOF
+
+Apply it:
+
+kubectl apply -f grafana-lb.yaml
+
+This configuration requests an internet-facing NLB and routes traffic directly to pod IPs.
+
+Step 3: Check whether the Load Balancer is created
+
+Run:
+
+kubectl get svc grafana-external -n monitoring -w
+
+Initially you may see:
+
+EXTERNAL-IP   <pending>
+
+Wait until AWS creates the NLB.
+
+You should eventually see something similar to:
+
+NAME               TYPE           CLUSTER-IP       EXTERNAL-IP
+grafana-external   LoadBalancer   172.xx.xx.xx     xxxxx.elb.ap-south-1.amazonaws.com
+Step 4: Get the Grafana URL
+
+Run:
+
+kubectl get svc grafana-external -n monitoring
+
+Or directly:
+
+kubectl get svc grafana-external \
+  -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+Then access:
+
+http://YOUR-GRAFANA-NLB-DNS
+
+For example:
+
+http://xxxxx.elb.ap-south-1.amazonaws.com
