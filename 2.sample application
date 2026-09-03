@@ -1,7 +1,7 @@
 Create the application EC2 instance
 
-sudo dnf update -y
-sudo dnf install -y python3 python3-pip git curl
+sudo yum install update -y
+sudo yum install -y python3 python3-pip git curl
 
 python3 --version
 pip3 --version
