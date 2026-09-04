@@ -22,11 +22,6 @@ LICENSE  NOTICE  prometheus  prometheus.yml  promtool
 [root@localhost prometheus-3.14.0.linux-amd64]#
 
 Move binary files to bin folder
-[root@localhost ~]# cd prometheus-3.14.0.linux-amd64/
-
-[root@localhost prometheus-3.14.0.linux-amd64]# ls
-LICENSE  NOTICE  prometheus  prometheus.yml  promtool
-
 [root@localhost prometheus-3.4.0.linux-amd64]#mv prometheus promtool /usr/local/sbin
 
 
