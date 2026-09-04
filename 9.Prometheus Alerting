@@ -94,28 +94,6 @@ rule_files:
   # - "second_rules.yml"
  - "/etc/prometheus/rules/alerts.yaml"
 
-# A scrape configuration containing exactly one endpoint to scrape:
-# Here it's Prometheus itself.
-scrape_configs:
-  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
-  - job_name: "prometheus"
-
-    # metrics_path defaults to '/metrics'
-    # scheme defaults to 'http'.
-
-    static_configs:
-      - targets: ["localhost:9090"]
-       # The label name is added as a label `label_name=<label_value>` to any timeseries scraped from this config.
-        labels:
-          app: "prometheus"
-    scrape_native_histograms: true
-  - job_name: "node"
-    scrape_interval: 15s   # Prometheus scrapes every 15 seconds
-    scrape_timeout: 10s    # Each scrape must finish within 10 seconds
-    static_configs:
-      - targets: ["13.203.101.209:9100"]
-        labels:
-          app: "prometheus_node"
 
 route the alert into alertmanger's default channel
 ==================================================
