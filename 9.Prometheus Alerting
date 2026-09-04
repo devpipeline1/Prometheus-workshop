@@ -31,6 +31,19 @@ groups:
           description: “Instance {{ $labels.instance }} is unreachable. {{ $labels }} and value is : {{ $value }}”
 
 
+  - name: cpu_alert_rules
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 2m
+        labels:
+          team: infra
+          severity: Critical
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% (idle < 20%) on instance {{ $labels.instance }}. Current value: {{ $value }}%"
+
 
 Installing Alert Manager
 
