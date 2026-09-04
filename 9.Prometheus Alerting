@@ -126,8 +126,40 @@ receivers:
     slack_configs:
       - api_url: 'https://hooks.slack.com/services/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'
         channel: '#new-channel'
-login slack  channel ;select integration tab add an app  search incoming web hook add to slack choose the channel where do you want to receive notificationchange emoji if you want
-then webhook url will be generated  copy this url
+
+
+Step‑by‑step in Slack
+======================
+Open Slack App Directory
+
+In Slack, click on your workspace name → Apps → Browse App Directory.
+
+Or go directly to: https://slack.com/apps.
+
+Search for “Incoming Webhooks”
+
+Type Incoming Webhooks in the search bar.
+
+Select the official Slack app called Incoming Webhooks.
+
+Add to Slack
+
+Click Add to Slack.
+
+Choose the channel where you want alerts to appear (e.g., #incident-1 or #easytradeee).
+
+Click Allow.
+
+Copy the Webhook URL
+
+Slack will generate a unique URL like:
+
+Code
+https://hooks.slack.com/services/TXXXX/BXXXX/XXXXXXXX
+This URL is tied to the channel you selected.
+
+Copy it — you’ll paste it into Alertmanager’s config.
+
 
 if we want we can route alert into different channels:
 =====================================================
