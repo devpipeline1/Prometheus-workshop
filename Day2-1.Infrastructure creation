@@ -43,6 +43,28 @@ Private subnet 2                        Private subnet 2
                 pcx-06f3d55a3c15322ff
 
 
+AWS
+│
+├── Application VPC
+│     CIDR: 10.10.0.0/16
+│
+│     Contains:
+│     ├── Application EKS Cluster
+│     ├── Online Boutique
+│     ├── Grafana Alloy
+│     └── Application Load Balancer / NLB
+│
+│
+└── Monitoring VPC
+      CIDR: 10.20.0.0/16
+
+      Contains:
+      ├── Monitoring EKS Cluster
+      ├── Prometheus
+      ├── Thanos
+      ├── Loki
+      ├── Tempo
+      └── Grafana
 
 
 
