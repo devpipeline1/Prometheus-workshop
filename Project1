@@ -1,1 +1,345 @@
+Kubernetes Discovery
+        │
+        ▼
+Discovery Relabel
+        │
+        │ Keep only:
+        │
+        ├── frontend
+        ├── emailservice
+        ├── paymentservice
+        ├── currencyservice
+        └── checkoutservice
+        │
+        ▼
+Loki
+
+
+
+
+// ============================================================
+// LOG DISCOVERY
+// ============================================================
+
+discovery.kubernetes "online_boutique_pods" {
+  role = "pod"
+
+  namespaces {
+    names = ["online-boutique"]
+  }
+}
+
+
+// ============================================================
+// FILTER SELECTED MICROSERVICES
+// ============================================================
+
+discovery.relabel "online_boutique_logs" {
+
+  targets = discovery.kubernetes.online_boutique_pods.targets
+
+
+  // Keep only selected applications
+
+  rule {
+    action = "keep"
+
+    source_labels = [
+      "__meta_kubernetes_pod_label_app"
+    ]
+
+    regex = "frontend|emailservice|paymentservice|currencyservice|checkoutservice"
+  }
+
+
+  // Add namespace label
+
+  rule {
+    action = "replace"
+
+    source_labels = [
+      "__meta_kubernetes_namespace"
+    ]
+
+    target_label = "namespace"
+  }
+
+
+  // Add application label
+
+  rule {
+    action = "replace"
+
+    source_labels = [
+      "__meta_kubernetes_pod_label_app"
+    ]
+
+    target_label = "app"
+  }
+
+
+  // Add pod label
+
+  rule {
+    action = "replace"
+
+    source_labels = [
+      "__meta_kubernetes_pod_name"
+    ]
+
+    target_label = "pod"
+  }
+
+}
+
+
+// ============================================================
+// COLLECT FILTERED LOGS
+// ============================================================
+
+loki.source.kubernetes "online_boutique" {
+
+  targets =
+    discovery.relabel.online_boutique_logs.output
+
+  forward_to = [
+    loki.write.monitoring.receiver
+  ]
+}
+
+
+
+
+
+
+
+
+How log filtering works
+
+Alloy discovers:
+
+ALL PODS
+    │
+    ▼
+
+frontend
+emailservice
+paymentservice
+currencyservice
+cartservice
+recommendationservice
+adservice
+redis-cart
+
+
+
+Then this rule executes:
+
+regex = "frontend|emailservice|paymentservice|currencyservice|checkoutservice"
+
+
+Result:
+
+✓ frontend
+
+✓ emailservice
+
+✓ paymentservice
+
+✓ currencyservice
+
+✓ checkoutservice
+
+
+✗ cartservice
+
+✗ recommendationservice
+
+✗ adservice
+
+✗ redis-cart
+
+
+
+
+Label-based log filtering
+========================
+
+discovery.kubernetes "online_boutique_pods" {
+
+  role = "pod"
+
+  namespaces {
+    names = ["online-boutique"]
+  }
+}
+
+
+discovery.relabel "logs_filter" {
+
+  targets =
+    discovery.kubernetes.online_boutique_pods.targets
+
+
+  rule {
+
+    action = "keep"
+
+    source_labels = [
+      "__meta_kubernetes_pod_label_observability_grafana_com_logs"
+    ]
+
+    regex = "true"
+  }
+
+}
+
+
+loki.source.kubernetes "selected_logs" {
+
+  targets =
+    discovery.relabel.logs_filter.output
+
+  forward_to = [
+    loki.write.monitoring.receiver
+  ]
+}
+
+
+
+Application
+
+frontend
+logs=true
+   │
+
+emailservice
+logs=true
+   │
+
+paymentservice
+logs=true
+   │
+
+cartservice
+(no label)
+   │
+
+        ▼
+
+       Alloy
+
+        │
+
+        ▼
+
+      Loki
+
+
+
+
+
+Metric control:
+================
+
+kubectl annotate deployment frontend \
+  -n online-boutique \
+  prometheus.io/scrape=true
+
+
+kubectl annotate deployment frontend \
+  -n online-boutique \
+  prometheus.io/path=/metrics
+
+
+kubectl annotate deployment frontend \
+  -n online-boutique \
+  prometheus.io/port=8080
+
+
+filter only pods where: prometheus.io/scrape=true
+
+
+
+discovery.relabel "metrics_filter" {
+
+  targets =
+    discovery.kubernetes.metrics_pods.targets
+
+
+  rule {
+
+    action = "keep"
+
+    source_labels = [
+      "__meta_kubernetes_pod_annotation_prometheus_io_scrape"
+    ]
+
+    regex = "true"
+  }
+
+
+  rule {
+
+    action = "replace"
+
+    source_labels = [
+      "__meta_kubernetes_pod_annotation_prometheus_io_path"
+    ]
+
+    target_label = "__metrics_path__"
+
+    regex = "(.+)"
+  }
+
+
+  rule {
+
+    action = "replace"
+
+    source_labels = [
+      "__meta_kubernetes_pod_annotation_prometheus_io_port"
+    ]
+
+    target_label = "__address__"
+
+    replacement = "$1"
+
+  }
+
+}
+
+
+
+Then scrape:
+
+prometheus.scrape "selected_microservices" {
+
+  targets =
+    discovery.relabel.metrics_filter.output
+
+  forward_to = [
+    prometheus.remote_write.monitoring.receiver
+  ]
+
+}
+
+Then write:
+prometheus.remote_write "monitoring" {
+
+  endpoint {
+
+    url = "http://PROMETHEUS-NLB:9090/api/v1/write"
+
+  }
+
+  external_labels = {
+
+    cluster     = "application-eks"
+    environment = "demo"
+
+  }
+
+}
+
 
