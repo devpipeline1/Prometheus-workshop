@@ -1,0 +1,173 @@
+Before installing Alloy, let's verify that the application VPC can reach the monitoring VPC services through the VPC peering connection.
+
+Prometheus
+http://prometheus-operated.monitoring.svc.cluster.local:9090
+
+Loki
+http://loki.monitoring.svc.cluster.local:3100
+
+Tempo
+http://tempo.monitoring.svc.cluster.local:4317
+http://tempo.monitoring.svc.cluster.local:4318
+
+However, there is an important Kubernetes networking point:
+
+*.svc.cluster.local DNS names from monitoring-eks are not directly resolvable from application-eks.
+
+Therefore, because Alloy runs in a different EKS cluster, we need private network endpoints, not Kubernetes ClusterIP DNS.
+
+We should expose the three ingestion services through internal AWS NLBs.
+
+make sure you are in monitoring eks cluster:
+kubectl config use-context monitoring-eks
+
+Create an internal NLB for Prometheus:
+=====================================
+
+cat > prometheus-internal-nlb.yaml <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-remote-write
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: prometheus
+    prometheus: kube-prometheus-stack-prometheus
+  ports:
+    - name: remote-write
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+EOF
+
+kubectl apply -f prometheus-internal-nlb.yaml
+
+$ kubectl get svc prometheus-remote-write -n monitoring
+NAME                      TYPE           CLUSTER-IP      EXTERNAL-IP                                                                      PORT(S)          AGE
+prometheus-remote-write   LoadBalancer   172.20.71.241   k8s-monitori-promethe-e0617ba28f-d5c130e99c27d8ba.elb.ap-south-1.amazonaws.com   9090:31189/TCP   3m42s
+
+
+Create an internal NLB for Loki:
+===============================
+cat > loki-internal-nlb.yaml <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-ingest
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      protocol: TCP
+EOF
+
+kubectl apply -f loki-internal-nlb.yaml
+
+$ kubectl get svc loki-ingest -n monitoring
+NAME          TYPE           CLUSTER-IP    EXTERNAL-IP                                                                      PORT(S)          AGE
+loki-ingest   LoadBalancer   172.20.70.9   k8s-monitori-lokiinge-a09257c812-8872d6d59604b187.elb.ap-south-1.amazonaws.com   3100:31464/TCP   2m39s
+
+
+Create an internal NLB for Tempo:
+================================
+cat > tempo-internal-nlb.yaml <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-ingest
+  namespace: monitoring
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: tempo
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+EOF
+
+
+kubectl apply -f tempo-internal-nlb.yaml
+
+$ kubectl get svc tempo-ingest -n monitoring
+NAME           TYPE           CLUSTER-IP     EXTERNAL-IP                                                                      PORT(S)                         AGE
+tempo-ingest   LoadBalancer   172.20.37.14   k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com   4317:30966/TCP,4318:31467/TCP   8s
+
+
+Verify all 3 NLB are internel:
+=============================
+kubectl get svc prometheus-remote-write loki-ingest tempo-ingest \
+  -n monitoring \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" = "}{.metadata.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-scheme}{"\n"}{end}'
+
+checl all 3 NLB address:
+=======================
+$ kubectl get svc \
+  prometheus-remote-write \
+  loki-ingest \
+  tempo-ingest \
+  -n monitoring \
+  -o custom-columns='NAME:.metadata.name,ADDRESS:.status.loadBalancer.ingress[0].hostname'
+NAME                      ADDRESS
+prometheus-remote-write   k8s-monitori-promethe-e0617ba28f-d5c130e99c27d8ba.elb.ap-south-1.amazonaws.com
+loki-ingest               k8s-monitori-lokiinge-a09257c812-8872d6d59604b187.elb.ap-south-1.amazonaws.com
+tempo-ingest              k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com
+
+
+Test connectivity from application-eks to monitoring eks network load balancer:
+===============================================================================
+
+switch to application eks cluster
+$ kubectl config use-context application-eks
+Switched to context "application-eks".
+
+$ kubectl run network-test \
+  --image=curlimages/curl:8.10.1 \
+  --restart=Never \
+  --rm -it \
+  -- sh
+and run below 3 command to check whethere we are able to reach from monitoring eks cluster
+
+curl -I http://k8s-monitori-promethe-e0617ba28f-d5c130e99c27d8ba.elb.ap-south-1.amazonaws.com:9090/-/ready
+curl -s http://k8s-monitori-lokiinge-a09257c812-8872d6d59604b187.elb.ap-south-1.amazonaws.com:3100/ready
+nc -vz -w 5 k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com 4317
+
+
+Application EKS
+     │
+     │ VPC Peering
+     ▼
+Monitoring EKS
+     │
+     ├── Prometheus NLB :9090  ✅
+     │
+     ├── Loki NLB :3100       ✅
+     │
+     └── Tempo NLB
+          ├── :4317 OTLP gRPC
+          └── :4318 OTLP HTTP
+Do not add port 3200 to the NLB. 3200 is useful for Tempo's HTTP/query API, but Alloy only needs 4317/4318 for trace ingestion.
