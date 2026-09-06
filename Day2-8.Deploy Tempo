@@ -1,5 +1,24 @@
 Tempo:
 ======
+
+Application Pods
+      │
+      │ OTLP Traces
+      ▼
+    Alloy
+      │
+      │ OTLP
+      ▼
+    Tempo
+      │
+      │ IRSA / IAM Role
+      ▼
+      S3
+      │
+      │ Query traces
+      ▼
+   Grafana
+
 already create bucket and service account and policies
 
 $ aws s3api head-bucket \
