@@ -1,0 +1,432 @@
+Pre-requisite:
+==============================================================================================================================
+#Install Helm
+==============================================================================================================================
+
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+
+
+[ec2-user@ip-172-31-1-66 myproject]$ curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+[ec2-user@ip-172-31-1-66 myproject]$ ls
+get_helm.sh  kube8
+[ec2-user@ip-172-31-1-66 myproject]$ chmod 700 get_helm.sh
+[ec2-user@ip-172-31-1-66 myproject]$ ./get_helm.sh 
+[WARNING] Could not find git. It is required for plugin installation.
+Downloading https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz
+Verifying checksum... Done.
+Preparing to install helm into /usr/local/bin
+helm installed into /usr/local/bin/helm
+[ec2-user@ip-172-31-1-66 myproject]$ 
+[ec2-user@ip-172-31-1-66 myproject]$ helm version
+version.BuildInfo{Version:"v3.17.3", GitCommit:"e4da49785aa6e6ee2b86efd5dd9e43400318262b", GitTreeState:"clean", GoVersion:"go1.23.7"}
+
+
+####################################################################################################################################
+kubectl – A command line tool for working with Kubernetes clusters. For more information, see Installing or updating kubectl.
+####################################################################################################################################
+
+Refer "https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
+
+
+[root@ip-172-31-80-84 ~]# curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   138  100   138    0     0   3117      0 --:--:-- --:--:-- --:--:--  3209
+100 57.3M  100 57.3M    0     0  63.6M      0 --:--:-- --:--:-- --:--:-- 88.1M
+[root@ip-172-31-80-84 ~]# curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   138  100   138    0     0   3173      0 --:--:-- --:--:-- --:--:--  3209
+100    64  100    64    0     0   1247      0 --:--:-- --:--:-- --:--:--  1247
+[root@ip-172-31-80-84 ~]# echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+kubectl: OK
+[root@ip-172-31-80-84 ~]# sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+[root@ip-172-31-80-84 ~]# kubectl version --client
+Client Version: v1.33.1
+Kustomize Version: v5.6.0
+[root@ip-172-31-80-84 ~]#
+
+
+####################################################################################################################################
+eksctl – A command line tool for working with EKS clusters that automates many individual tasks. For more information, see Installing or updating.
+####################################################################################################################################
+Refer "https://eksctl.io/installation/"
+
+# for ARM systems, set ARCH to: `arm64`, `armv6` or `armv7`
+ARCH=amd64
+PLATFORM=$(uname -s)_$ARCH
+
+curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+
+# (Optional) Verify checksum
+curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_checksums.txt" | grep $PLATFORM | sha256sum --check
+
+tar -xzf eksctl_$PLATFORM.tar.gz -C /tmp && rm eksctl_$PLATFORM.tar.gz
+
+sudo install -m 0755 /tmp/eksctl /usr/local/bin && rm /tmp/eksctl
+
+eksctl version
+
+####################################################################################################################################
+AWS CLI – A command line tool for working with AWS services, including Amazon EKS. For more information, see Installing, updating, and uninstalling the AWS CLI in the AWS Command Line Interface User Guide. After installing the AWS CLI, we recommend that you also configure it. For more information, see Quick configuration with aws configure in the AWS Command Line Interface User Guide.
+####################################################################################################################################
+
+Refer "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+
+##Login aws frol cli##
+[root@ip-172-31-80-84 ~]# aws configure
+AWS Access Key ID [None]: AKBKICKUDKIUKI
+AWS Secret Access Key [None]: xyzxyzxyzxyz
+Default region name [None]: us-east-1
+Default output format [None]:
+
+
+Create Application EKS:
+======================
+2.1 First load your network variables
+
+2.2 Check your tools
+aws --version
+eksctl version
+kubectl version --client
+
+2.3 Create Application EKS configuration
+
+vi application-eks.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: application-eks
+  region: ap-south-1
+  version: "1.36"
+
+iam:
+  withOIDC: true
+
+vpc:
+  id: vpc-0fb435c6f4f8727e1
+
+  subnets:
+    private:
+      app-private-a:
+        id: subnet-0355b32c991dcb07b
+      app-private-b:
+        id: subnet-0a718745b22d757ce
+
+managedNodeGroups:
+  - name: application-workers
+    instanceType: t3.large
+    minSize: 2
+    desiredCapacity: 2
+    maxSize: 3
+    privateNetworking: true
+    volumeSize: 50
+    volumeType: gp3
+    labels:
+      workload: application
+    tags:
+      Name: application-eks-worker
+      Environment: demo
+      Cluster: application-eks
+      Workload: application
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+
+
+The important part is: privateNetworking: true
+So our application EC2 worker nodes will be here:
+
+Application VPC
+10.10.0.0/16
+
+        PRIVATE SUBNETS
+
+10.10.11.0/24       10.10.12.0/24
+     AZ1                 AZ2
+      |                    |
+      +--------+-----------+
+               |
+        Application EKS
+        Worker Nodes
+
+They will not receive public IP addresses.
+outbound internet traffic will use:
+
+Application EKS Node
+       |
+       ↓
+Private Route Table
+       |
+       ↓
+NAT Gateway
+       |
+       ↓
+Internet Gateway
+       |
+       ↓
+Internet
+
+About EBS CSI
+
+We are going to need persistent storage later for:
+Prometheus
+Thanos Store Gateway
+Loki
+Tempo
+
+
+Prometheus
+    |
+    ↓
+PersistentVolumeClaim
+    |
+    ↓
+EBS Volume
+
+create the cluster:
+eksctl create cluster \
+  -f application-eks.yaml
+
+This will take several minutes.
+
+eksctl create command will create below component:
+EKS Control Plane
+      |
+      +-- IAM
+      |
+      +-- Security Groups
+      |
+      +-- ENIs
+      |
+      +-- Managed Node Group
+      |
+      +-- EC2 instances
+      |
+      +-- EKS Add-ons
+
+2.6 Verify Application EKS
+
+aws eks describe-cluster \
+  --region ap-south-1 \
+  --name application-eks \
+  --query 'cluster.status'
+
+Update kubeconfig
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name application-eks
+
+kubectl get nodes
+
+Notice the private IPs: 
+10.10.11.x
+10.10.12.x
+
+2.9 Verify EKS add-ons
+aws eks list-addons \
+  --region ap-south-1 \
+  --cluster-name application-eks
+
+vpc-cni
+coredns
+kube-proxy
+aws-ebs-csi-driver
+
+kubectl get pods -n kube-system
+
+You should see components such as:
+
+aws-node-xxxxx
+aws-node-yyyyy
+coredns-xxxxx
+coredns-yyyyy
+kube-proxy-xxxxx
+kube-proxy-yyyyy
+ebs-csi-controller-xxxxx
+ebs-csi-node-xxxxx
+
+
+2.10 Verify EBS CSI
+kubectl get pods -n kube-system | grep ebs
+
+
+2.11 Verify Application EKS networking
+Let's confirm that the nodes really are using the private subnets.
+aws ec2 describe-instances \
+  --region ap-south-1 \
+  --filters \
+    "Name=tag:eks:cluster-name,Values=application-eks" \
+    "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].{
+    InstanceId:InstanceId,
+    PrivateIP:PrivateIpAddress,
+    Subnet:SubnetId,
+    AZ:Placement.AvailabilityZone
+  }' \
+  --output table
+
+3.1 Verify OIDC
+
+in our eks cluster creation file we have
+iam:
+  withOIDC: true
+
+Just verify it:
+
+eksctl utils associate-iam-oidc-provider \
+  --region ap-south-1 \
+  --cluster application-eks \
+  --approve
+
+it says the provider already exists, that's fine.
+
+
+                    AWS
+                     |
+          +----------+----------+
+          |                     |
+          ↓                     ↓
+ Application VPC          Monitoring VPC
+ 10.10.0.0/16             10.20.0.0/16
+          |                     |
+          ↓                     |
+ Application EKS                |
+          |                     |
+   2 private nodes              |
+          |                     |
+          +---- VPC Peering ----+
+
+
+2 worker nodes
+Both are Ready
+Nodes are in the two private subnets:
+10.10.11.185 → AZ ap-south-1a
+10.10.12.30 → AZ ap-south-1b
+Nodes have no public IPs
+EBS CSI is installed
+VPC CNI, CoreDNS and kube-proxy are installed
+
+Create Monitoring EKS
+====================
+source network-output.env
+
+echo $MON_VPC_ID
+echo $MON_PRIVATE_1_ID
+echo $MON_PRIVATE_2_ID
+echo $MON_CLUSTER_NAME
+
+vi monitoring-eks.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: monitoring-eks
+  region: ap-south-1
+  version: "1.36"
+
+iam:
+  withOIDC: true
+
+vpc:
+  id: $MON_VPC_ID
+
+  subnets:
+    private:
+      monitoring-private-a:
+        id: $MON_PRIVATE_1_ID
+
+      monitoring-private-b:
+        id: $MON_PRIVATE_2_ID
+
+managedNodeGroups:
+  - name: monitoring-workers
+    instanceType: t3.xlarge
+    minSize: 2
+    desiredCapacity: 2
+    maxSize: 3
+
+    privateNetworking: true
+    volumeSize: 50
+    volumeType: gp3
+    labels:
+      workload: monitoring
+
+    tags:
+      Name: monitoring-eks-worker
+      Environment: demo
+      Cluster: monitoring-eks
+      Workload: monitoring
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+  - name: metrics-server
+
+Replace VPC id and subnetid's
+
+eksctl create cluster \
+  -f monitoring-eks.yaml
+
+Connect kubectl to Monitoring EKS
+=================================
+aws eks update-kubeconfig \
+  --region ap-south-1 \
+  --name monitoring-eks
+
+kubectl get nodes -o wide
+
+10.20.11.x
+10.20.12.x
+
+Rename contest so it will be easy to switch clusters
+kubectl config rename-context \
+  $(kubectl config get-contexts -o name | grep 'cluster/application-eks') \
+  application-eks
+
+kubectl config rename-context \
+  $(kubectl config get-contexts -o name | grep 'cluster/monitoring-eks') \
+  monitoring-eks
+
+kubectl config get-contexts 
+kubectl config use-context application-eks
+kubectl config use-context monitoring-eks
+
+Verify Monitoring EKS add-ons
+aws eks list-addons \
+  --region ap-south-1 \
+  --cluster-name monitoring-eks
+
+Verify EBS CSI
+kubectl get pods -n kube-system | grep ebs
+
+
+
+                    AWS
+                     |
+        +------------+-------------+
+        |                          |
+        ↓                          ↓
+ Application VPC              Monitoring VPC
+  10.10.0.0/16                 10.20.0.0/16
+        |                          |
+        ↓                          ↓
+ Application EKS              Monitoring EKS
+        |                          |
+     2 nodes                    2 nodes
+        |                          |
+        +------ VPC Peering -------+
