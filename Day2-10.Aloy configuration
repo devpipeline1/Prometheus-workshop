@@ -1,0 +1,454 @@
+Alloy configuration:
+====================
+
+we will configure 3 pipelines
+
+                    application-eks
+┌──────────────────────────────────────────────────────┐
+│                                                      │
+│  Online Boutique                                     │
+│       │                                              │
+│       ▼                                              │
+│  ┌─────────────────────┐                             │
+│  │    Grafana Alloy    │                             │
+│  │                     │                             │
+│  │  Metrics            │                             │
+│  │  Logs               │                             │
+│  │  Traces             │                             │
+│  └──────┬──────────────┘                             │
+│         │                                            │
+└─────────┼────────────────────────────────────────────┘
+          │
+          │ VPC Peering
+          │
+          ▼
+┌──────────────────────────────────────────────────────┐
+│                    monitoring-eks                    │
+│                                                      │
+│  Prometheus :9090  ◄── metrics                       │
+│       │                                              │
+│       ▼                                              │
+│    Thanos → S3                                       │
+│                                                      │
+│  Loki :3100       ◄── logs                          │
+│       │                                              │
+│       ▼                                              │
+│      S3                                              │
+│                                                      │
+│  Tempo :4317/4318 ◄── traces                        │
+│       │                                              │
+│       ▼                                              │
+│      S3                                              │
+└──────────────────────────────────────────────────────┘
+
+
+                 APPLICATION EKS
+              ┌─────────────────────┐
+              │                     │
+              │  Application Pods   │
+              │       │             │
+              │       ▼             │
+              │      Alloy          │
+              │     / |  \          │
+              └────/──┼───\─────────┘
+                  /   │    \
+                 /    │     \
+                ▼     ▼      ▼
+          Prometheus  Loki   Tempo
+             :9090   :3100  :4317
+                │      │      │
+                ▼      ▼      ▼
+            Prometheus  S3    S3
+                │
+                ▼
+              Thanos
+                │
+                ▼
+                S3
+                │
+                ▼
+             Grafana
+
+switch to application eks cluster
+$ kubectl config use-context application-eks
+
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+search alloy in already installed grafana helm chart
+helm search repo grafana/alloy
+
+$ helm search repo grafana/alloy
+NAME                    CHART VERSION   APP VERSION     DESCRIPTION
+grafana/alloy           1.12.1          v1.19.2         Grafana Alloy
+grafana/alloy-crd       1.0.1           1.0.1           A Helm chart the Alloy CustomResourceDefinition...
+grafana/alloy-operator  0.7.1           1.12.1          Grafana Alloy Operator, providing innovative wa...
+
+
+Create alloy namespace:
+$ kubectl create namespace alloy
+namespace/alloy created
+
+Create the initial Alloy configuration:
+======================================
+
+vi alloy-values.yaml
+
+alloy:
+  configMap:
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ============================================================
+      // METRICS - Prometheus Remote Write
+      // ============================================================
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-promethe-e0617ba28f-d5c130e99c27d8ba.elb.ap-south-1.amazonaws.com:9090/api/v1/write"
+        }
+
+        external_labels = {
+          cluster     = "application-eks",
+          environment = "demo",
+        }
+      }
+
+      // ============================================================
+      // LOGS - Kubernetes Pods -> Loki
+      // ============================================================
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.kubernetes.pods.targets
+        forward_to = [loki.write.monitoring.receiver]
+      }
+
+      loki.write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-lokiinge-a09257c812-8872d6d59604b187.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+        }
+
+        external_labels = {
+          cluster     = "application-eks",
+          environment = "demo",
+        }
+      }
+
+      // ============================================================
+      // TRACES - OTLP Receiver
+      // ============================================================
+
+      otelcol.receiver.otlp "application" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+
+        output {
+          traces = [otelcol.processor.batch.application.input]
+        }
+      }
+
+      // ============================================================
+      // TRACES - Batch Processor
+      // ============================================================
+
+      otelcol.processor.batch "application" {
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+
+      // ============================================================
+      // TRACES - Tempo
+      // ============================================================
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com:4317"
+
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+  # ================================================================
+  # OTLP PORTS
+  # ================================================================
+
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+
+# ================================================================
+# ALLOY SERVICE
+# ================================================================
+
+service:
+  enabled: true
+  type: LoadBalancer
+
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
+
+
+
+Install Alloy:
+=============
+helm upgrade --install alloy grafana/alloy \
+  -n alloy \
+  -f alloy-values.yaml
+
+
+$ kubectl get ds -n alloy
+NAME    DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+alloy   2         2         2       2            0           <none>          33s
+
+$ kubectl get pods -n alloy
+NAME          READY   STATUS    RESTARTS   AGE
+alloy-2t9gw   2/2     Running   0          36s
+alloy-q8vrc   2/2     Running   0          36s
+
+
+Check Alloy logs:
+================
+
+$ kubectl logs -n alloy -l app.kubernetes.io/name=alloy --tail=500 | grep -iE "otelcol|tempo|export|error|fail"
+ts=2026-09-05T18:49:41.397288475Z level=info msg="finished node evaluation" controller_path=/ controller_id="" trace_id=8036a4b8a262b61b67f22ee255aa3e0c node_id=otelcol.exporter.otlp.tempo duration=582.294µs
+ts=2026-09-05T18:49:41.397477406Z level=info msg="finished node evaluation" controller_path=/ controller_id="" trace_id=8036a4b8a262b61b67f22ee255aa3e0c node_id=otelcol.processor.batch.application duration=180.497µs
+
+trace id showing means its looks good
+
+Troubbleshooting: (you can use this for just tesing)
+================
+Generate traces in application cluster
+
+kubectl run telemetrygen \
+  -n default \
+  --restart=Never \
+  --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest \
+  -- \
+  traces \
+  --otlp-endpoint=k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com:4317 \
+  --otlp-insecure \
+  --traces=5
+
+
+kubectl get pod telemetrygen -n default
+kubectl logs telemetrygen -n default
+
+                APPLICATION EKS
+                       │
+                       │ OTLP :4317
+                       ▼
+        ┌──────────────────────────────┐
+        │      INTERNAL NLB            │
+        │      Alloy                   │
+        │                              │
+        │ :4317  OTLP gRPC             │
+        │ :4318  OTLP HTTP             │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                ┌─────────────┐
+                │    ALLOY    │
+                │  DaemonSet  │
+                └──────┬──────┘
+                       │
+                       │ OTLP :4317
+                       ▼
+              ┌─────────────────┐
+              │      TEMPO      │
+              │ Internal NLB    │
+              │      :4317      │
+              └────────┬────────┘
+                       │
+                       ▼
+                 Tempo S3 Bucket
+
+
+we will create internal networl load balancer for alloy services
+
+
+$ kubectl get pods -n alloy
+NAME          READY   STATUS    RESTARTS   AGE
+alloy-ncqsb   2/2     Running   0          41s
+alloy-z4m8x   2/2     Running   0          63s
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject11
+$ kubectl get svc alloy -n alloy
+NAME    TYPE           CLUSTER-IP       EXTERNAL-IP                                                                PORT(S)                                         AGE
+alloy   LoadBalancer   172.20.129.131   k8s-alloy-alloy-d798aea506-2fe3c11a53220111.elb.ap-south-1.amazonaws.com   12345:31201/TCP,4317:32437/TCP,4318:31990/TCP   27m
+
+
+
+Alloy Pods
+├── alloy-ncqsb   2/2 Running
+└── alloy-z4m8x   2/2 Running
+
+Alloy Service
+└── Internal NLB
+    ├── :12345  → Alloy metrics/UI
+    ├── :4317   → OTLP gRPC
+    └── :4318   → OTLP HTTP
+
+test Application EKS → Alloy → Tempo
+
+First save NLB hostname:
+=======================
+$ export ALLOY_OTLP_NLB=$(kubectl get svc alloy -n alloy \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+echo $ALLOY_OTLP_NLB
+k8s-alloy-alloy-d798aea506-2fe3c11a53220111.elb.ap-south-1.amazonaws.com
+
+Make sure you are in application eks cluster
+$ kubectl config current-context
+application-eks
+
+
+
+Then run the trace generator:
+
+kubectl run telemetrygen \
+  -n default \
+  --rm -it \
+  --restart=Never \
+  --image=ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest \
+  -- \
+  traces \
+  --otlp-endpoint=${ALLOY_OTLP_NLB}:4317 \
+  --otlp-insecure \
+  --traces=5
+
+
+Expected:
+
+traces generated {"worker": 0, "traces": 5}
+
+This test is :
+
+Application EKS
+      │
+      │ :4317
+      ▼
+Alloy Internal NLB
+      │
+      ▼
+Alloy OTLP Receiver
+      │
+      ▼
+Batch Processor
+      │
+      │ :4317
+      ▼
+Tempo
+
+check logs once:
+===============
+kubectl logs -n alloy daemonset/alloy --tail=300 | grep -iE "tempo|export|error|failed"
+kubectl logs -n alloy daemonset/alloy --tail=300 | grep -i "otelcol.exporter.otlp.tempo"
+
+
+switch to monitoring cluster:
+============================
+$ kubectl get pods -n monitoring -l app.kubernetes.io/name=tempo
+NAME      READY   STATUS    RESTARTS   AGE
+tempo-0   1/1     Running   0          86m
+
+
+$ kubectl logs -n monitoring sts/tempo --tail=300 | grep -iE "error|failed|s3|block|trace"
+level=info ts=2026-09-05T18:04:42.629489218Z caller=cache.go:55 msg="caches available to storage backend" parquet-footer=false bloom=false parquet-offset-idx=false parquet-column-idx=false trace-id-index=false parquet-page=false
+level=info ts=2026-09-05T18:04:42.682454332Z caller=cache.go:55 msg="caches 
+
+
+Check whether Tempo is writing to S3:
+
+$ aws s3 ls s3://$TEMPO_BUCKET/ --recursive --region $AWS_REGION | head -30
+2026-09-06 01:01:30     102424 single-tenant/d22aefcf-7e84-4f00-84da-2487f703b689/bloom-0
+2026-09-06 01:01:30      32641 single-tenant/d22aefcf-7e84-4f00-84da-2487f703b689/data.parquet
+2026-09-06 01:01:30         42 single-tenant/d22aefcf-7e84-4f00-84da-2487f703b689/index
+2026-09-06 01:01:30        449 single-tenant/d22aefcf-7e84-4f00-84da-2487f703b689/meta.json
+
+
+
+Add Tempo datasource to Grafana:
+Update your existing grafana-values.yaml.
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+
+      # ============================================================
+      # METRICS - Thanos
+      # ============================================================
+
+      - name: Thanos
+        type: prometheus
+        access: proxy
+        url: http://thanos-query.monitoring.svc.cluster.local:9090
+        isDefault: true
+        editable: true
+
+      # ============================================================
+      # LOGS - Loki
+      # ============================================================
+
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        editable: true
+
+      # ============================================================
+      # TRACES - Tempo
+      # ============================================================
+
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo.monitoring.svc.cluster.local:3200
+        editable: true
+
+
+
+helm upgrade grafana grafana/grafana \
+  -n monitoring \
+  -f grafana-values.yaml
+
+
+| Datasource | Endpoint                                                |
+| ---------- | ------------------------------------------------------- |
+| Loki       | `http://loki.monitoring.svc.cluster.local:3100`         |
+| Tempo      | `http://tempo.monitoring.svc.cluster.local:3200`        |
+| Thanos     | `http://thanos-query.monitoring.svc.cluster.local:9090` | 
+| prometheus   | `http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090` | 
+
+
+
+We have tested traces using telemetrygen, but we haven't yet deployed the Online Boutique application
