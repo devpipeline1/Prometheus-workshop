@@ -1,0 +1,209 @@
+AWS Load Balancer Controller
+===========================
+Application EKS
+      |
+      ↓
+AWS Load Balancer Controller
+      |
+      ↓
+Application Frontend LB
+
+
+
+Monitoring EKS
+      |
+      ↓
+AWS Load Balancer Controller
+      |
+      +----> Grafana public LB
+      |
+      +----> Prometheus internal NLB
+      |
+      +----> Loki internal NLB
+      |
+      +----> Tempo internal NLB
+
+so we have to install load balancer controller on both the clusters.
+application-eks
+       |
+       └── AWS Load Balancer Controller
+
+monitoring-eks
+       |
+       └── AWS Load Balancer Controller
+
+
+First verify AWS CLI identity
+
+aws sts get-caller-identity
+
+Verify OIDC for Application EKS
+
+aws eks describe-cluster \
+  --region ap-south-1 \
+  --name application-eks \
+  --query 'cluster.identity.oidc.issuer' \
+  --output text
+
+Expected:
+https://oidc.eks.ap-south-1.amazonaws.com/id/XXXXXXXX
+
+aws eks describe-cluster \
+  --region ap-south-1 \
+  --name monitoring-eks \
+  --query 'cluster.identity.oidc.issuer' \
+  --output text
+
+Check whether the AWS Load Balancer Controller policy already exists
+aws iam get-policy \
+  --policy-arn arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy
+
+
+Install Helm repository
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm search repo eks/aws-load-balancer-controller
+
+Create the IAM policy if its not exit
+
+Download the current AWS policy:
+curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+Create policy:
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam_policy.json
+
+Verify:
+aws iam get-policy \
+  --policy-arn arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy
+
+
+Create Monitoring IAM service account for monitoring EKS
+
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole-monitoring \
+  --attach-policy-arn arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve
+
+Install controller in Monitoring EKS
+
+helm upgrade --install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=monitoring-eks \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=ap-south-1 \
+  --set vpcId="$MON_VPC_ID"
+
+kubectl get pods \
+  -n kube-system \
+  -l app.kubernetes.io/name=aws-load-balancer-controller
+
+kubectl get deployment \
+  aws-load-balancer-controller \
+  -n kube-system
+
+Switch to Application EKS:
+
+kubectl config use-context application-eks
+
+Create IAM service account for Application EKS:
+eksctl create iamserviceaccount \
+  --cluster application-eks \
+  --region ap-south-1 \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --role-name AmazonEKSLoadBalancerControllerRole-application \
+  --attach-policy-arn arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve
+
+AWS IAM
+   |
+   ↓
+AmazonEKSLoadBalancerControllerRole-application
+   |
+   ↓
+Kubernetes ServiceAccount
+aws-load-balancer-controller
+   |
+   ↓
+AWS Load Balancer Controller
+
+kubectl get serviceaccount \
+  aws-load-balancer-controller \
+  -n kube-system
+
+Install AWS Load Balancer Controller
+
+helm upgrade --install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=application-eks \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=ap-south-1 \
+  --set vpcId="$APP_VPC_ID"
+
+kubectl get pods \
+  -n kube-system \
+  -l app.kubernetes.io/name=aws-load-balancer-controller
+
+Expected:
+
+NAME                                            READY   STATUS
+aws-load-balancer-controller-xxxxxxxxx-xxxxx    1/1     Running
+
+
+kubectl get deployment \
+  aws-load-balancer-controller \
+  -n kube-system
+
+kubectl logs \
+  -n kube-system \
+  deployment/aws-load-balancer-controller \
+  --tail=100
+
+                    AWS
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+     APP VPC                 MONITORING VPC
+     10.10.0.0/16            10.20.0.0/16
+          │                     │
+    application-eks        monitoring-eks
+          │                     │
+          │                     │
+     AWS LBC 2 pods        AWS LBC 2 pods
+          │                     │
+          └────── VPC PEERING ──┘
+                pcx-06f3d55a3c15322ff
+
+
+✅ AWS VPCs
+✅ VPC Peering
+✅ Private/Public Subnets
+✅ NAT Gateways
+✅ Application EKS
+✅ Monitoring EKS
+✅ OIDC Application EKS
+✅ OIDC Monitoring EKS
+✅ AWSLoadBalancerControllerIAMPolicy
+✅ Application LBC IAM Role/ServiceAccount
+✅ Monitoring LBC IAM Role/ServiceAccount
+⬜ AWS Load Balancer Controller — Monitoring EKS
+⬜ AWS Load Balancer Controller — Application EKS
+⬜ S3 buckets + IAM
+⬜ Prometheus HA
+⬜ Thanos
+⬜ Loki
+⬜ Tempo
+⬜ Alloy
+⬜ Grafana
+⬜ Online Boutique
+⬜ End-to-end observability validation
