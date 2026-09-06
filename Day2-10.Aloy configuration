@@ -92,6 +92,18 @@ namespace/alloy created
 Create the initial Alloy configuration:
 ======================================
 
+alloy-values.yaml
+│
+├── alloy
+│   │
+│   └── configMap
+│       │
+│       └── content
+│
+└── service
+    │
+    └── LoadBalancer
+
 vi alloy-values.yaml
 
 alloy:
