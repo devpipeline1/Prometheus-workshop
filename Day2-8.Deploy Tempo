@@ -9,11 +9,11 @@ Application Pods
       │
       │ OTLP
       ▼
-    Tempo
+    Tempo<----->S3
       │
       │ IRSA / IAM Role
       ▼
-      S3
+
       │
       │ Query traces
       ▼
