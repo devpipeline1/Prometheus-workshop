@@ -1,0 +1,92 @@
+Deploy Grafana:
+==============
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+vi grafana-values.yaml
+
+adminUser: admin
+
+adminPassword: "Admin@12345"
+
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+
+persistence:
+  enabled: true
+  storageClassName: monitoring-gp3
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+grafana.ini:
+  server:
+    root_url: "%(protocol)s://%(domain)s/"
+
+  users:
+    allow_sign_up: false
+
+  security:
+    admin_user: admin
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Thanos
+        type: prometheus
+        access: proxy
+        url: http://thanos-query.monitoring.svc.cluster.local:9090
+        isDefault: true
+        editable: true
+
+
+Install Grafana:
+==============
+helm upgrade --install grafana \
+  grafana/grafana \
+  --namespace monitoring \
+  --values grafana-values.yaml
+
+$ kubectl get pods -n monitoring | grep -i grafana
+grafana-76fd87fc6c-92svf                                    1/1     Running   0          36s
+
+
+$ kubectl get svc grafana -n monitoring
+NAME      TYPE           CLUSTER-IP      EXTERNAL-IP                                                                     PORT(S)        AGE
+grafana   LoadBalancer   172.20.72.150   k8s-monitori-grafana-f9ebf56a40-fa1fb5cfb72626c0.elb.ap-south-1.amazonaws.com   80:32306/TCP   55s
+
+                         INTERNET
+                            │
+                            ▼
+                ┌─────────────────────┐
+                │   AWS Internet      │
+                │   Facing NLB         │
+                └──────────┬──────────┘
+                           │
+                           ▼
+                ┌─────────────────────┐
+                │       Grafana       │
+                │   monitoring EKS    │
+                │     :80 / :3000     │
+                └──────────┬──────────┘
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          Thanos          Loki          Tempo
+          Query           :3100         :3200
+             │             │             │
+             ▼             ▼             ▼
+           S3            S3            S3
