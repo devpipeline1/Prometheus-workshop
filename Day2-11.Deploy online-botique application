@@ -1,0 +1,918 @@
+deploy the Google Online Boutique (microservices-demo) into application-eks, then validate all three signals in Grafana — Metrics, Logs, and Traces.
+
+Switch to Application EKS:
+
+$ kubectl config use-context application-eks
+Switched to context "application-eks".
+
+$ kubectl config current-context
+application-eks
+
+curl -L \
+  https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml \
+  -o online-boutique.yaml
+
+$ kubectl create ns online-boutique
+namespace/online-boutique created
+
+kubectl apply \
+  -n online-boutique \
+  -f online-boutique.yaml
+
+$ kubectl -n online-boutique get pods,deploy,svc
+NAME                                         READY   STATUS    RESTARTS   AGE
+pod/adservice-748f6f68d4-gp6z9               1/1     Running   0          98s
+pod/cartservice-9479b6c-c9ghr                1/1     Running   0          97s
+pod/checkoutservice-8458467c66-xbsjj         1/1     Running   0          96s
+pod/currencyservice-64b75b748-22l7w          1/1     Running   0          97s
+pod/emailservice-76c84c79d6-q99c7            1/1     Running   0          95s
+pod/frontend-6685976567-7ppwm                1/1     Running   0          98s
+pod/loadgenerator-549c665d59-n947w           1/1     Running   0          97s
+pod/paymentservice-5df7f57d78-rmp77          1/1     Running   0          96s
+pod/productcatalogservice-7dd48bf974-48dt4   1/1     Running   0          95s
+pod/recommendationservice-bb9db87fd-svvx7    1/1     Running   0          96s
+pod/redis-cart-788fbddc7-4ht45               1/1     Running   0          97s
+pod/shippingservice-768bf5c46b-f8ghn         1/1     Running   0          95s
+
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/adservice               1/1     1            1           98s
+deployment.apps/cartservice             1/1     1            1           97s
+deployment.apps/checkoutservice         1/1     1            1           96s
+deployment.apps/currencyservice         1/1     1            1           97s
+deployment.apps/emailservice            1/1     1            1           96s
+deployment.apps/frontend                1/1     1            1           98s
+deployment.apps/loadgenerator           1/1     1            1           97s
+deployment.apps/paymentservice          1/1     1            1           96s
+deployment.apps/productcatalogservice   1/1     1            1           95s
+deployment.apps/recommendationservice   1/1     1            1           97s
+deployment.apps/redis-cart              1/1     1            1           97s
+deployment.apps/shippingservice         1/1     1            1           95s
+
+NAME                            TYPE           CLUSTER-IP       EXTERNAL-IP                                                                      PORT(S)        AGE
+service/adservice               ClusterIP      172.20.136.209   <none>                                                                           9555/TCP       98s
+service/cartservice             ClusterIP      172.20.20.189    <none>                                                                           7070/TCP       97s
+service/checkoutservice         ClusterIP      172.20.173.34    <none>                                                                           5050/TCP       96s
+service/currencyservice         ClusterIP      172.20.217.84    <none>                                                                           7000/TCP       97s
+service/emailservice            ClusterIP      172.20.233.246   <none>                                                                           5000/TCP       96s
+service/frontend                ClusterIP      172.20.245.19    <none>                                                                           80/TCP         98s
+service/frontend-external       LoadBalancer   172.20.199.196   k8s-onlinebo-frontend-7a350731ac-5e55a14dc8ced378.elb.ap-south-1.amazonaws.com   80:31721/TCP   98s
+service/paymentservice          ClusterIP      172.20.127.34    <none>                                                                           50051/TCP      96s
+service/productcatalogservice   ClusterIP      172.20.10.13     <none>                                                                           3550/TCP       95s
+service/recommendationservice   ClusterIP      172.20.228.143   <none>                                                                           8080/TCP       96s
+service/redis-cart              ClusterIP      172.20.97.200    <none>                                                                           6379/TCP       97s
+service/shippingservice         ClusterIP      172.20.125.31    <none>                                                                           50051/TCP      95s
+
+Make the frontend-external service explicitly internet-facing
+
+kubectl annotate service frontend-external \
+  -n online-boutique \
+  service.beta.kubernetes.io/aws-load-balancer-type=external \
+  service.beta.kubernetes.io/aws-load-balancer-scheme=internet-facing \
+  service.beta.kubernetes.io/aws-load-balancer-nlb-target-type=ip \
+  --overwrite
+
+$ nslookup k8s-onlinebo-frontend-485b9553b1-2cbca725335a1089.elb.ap-south-1.amazonaws.com
+Server:  UnKnown
+Address:  192.168.0.1
+
+Non-authoritative answer:
+Name:    k8s-onlinebo-frontend-485b9553b1-2cbca725335a1089.elb.ap-south-1.amazonaws.com
+Address:  3.109.234.217
+
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject11/application-code/microservices-demo (main)
+$ curl -I http://k8s-onlinebo-frontend-485b9553b1-2cbca725335a1089.elb.ap-south-1.amazonaws.com
+HTTP/1.1 200 OK
+Set-Cookie: shop_session-id=3a43c99f-12f9-4b0d-a0e3-d1a49ea35bb6; Max-Age=172800
+Date: Sat, 05 Sep 2026 20:17:25 GMT
+Content-Type: text/html; charset=utf-8
+
+
+generate the load by loadgenerator
+
+$ kubectl get deployment loadgenerator -n online-boutique
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+loadgenerator   1/1     1            1           9m25s
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject11/application-code/microservices-demo (main)
+$ kubectl logs deployment/loadgenerator \
+  -n online-boutique \
+  --tail=50
+Defaulted container "main" out of: main, frontend-check (init)
+GET      /product/1YMWWN1N4O                                                               72     0(0.00%) |     33      20     128     28 |    0.10        0.00
+GET      /product/2ZYFJ3GM2N                                                               64     0(0.00%) |     30      20     100     27 |    0.10        0.00
+GET      /product/66VCHSJNUP                                                               68     0(0.00%) |     29      19      56     27 |    0.10        0.00
+GET      /product/6E92ZMYYFZ                                                               61     0(0.00%) |     29      19      89     26 |    0.10        0.00
+GET      /product/9SIQT8TOJO                                                               90     0(0.00%) |     33      18      94     29 |    0.10        0.00
+GET      /product/L9ECAV7KIM                                                               77     0(0.00%) |     29      20      63     28 |    0.10        0.00
+GET      /product/LS4PSXUNUM                                                               69     0(0.00%) |     31      20      80     29 |    0.10        0.00
+GET      /product/OLJCESPC7Z                                                               60     0(0.00%) |     29      20      48     28 |    0.20        0.00
+POST     /setCurrency                                                                      99     0(0.00%) |     48      31     120     44 |    0.30        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1123     0(0.00%) |     35      16     254     31 |    2.10        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+GET      /                                                                                 65     0(0.00%) |     49      29     203     44 |    0.10        0.00
+GET      /cart                                                                            140     0(0.00%) |     28      16      93     25 |    0.20        0.00
+POST     /cart                                                                            144     0(0.00%) |     43      24     141     38 |    0.60        0.00
+POST     /cart/checkout                                                                    49     0(0.00%) |     47      27     254     40 |    0.30        0.00
+GET      /product/0PUK6V6EV0                                                               65     0(0.00%) |     29      20      61     26 |    0.30        0.00
+GET      /product/1YMWWN1N4O                                                               73     0(0.00%) |     33      20     128     28 |    0.20        0.00
+GET      /product/2ZYFJ3GM2N                                                               64     0(0.00%) |     30      20     100     27 |    0.10        0.00
+GET      /product/66VCHSJNUP                                                               68     0(0.00%) |     29      19      56     27 |    0.10        0.00
+GET      /product/6E92ZMYYFZ                                                               61     0(0.00%) |     29      19      89     26 |    0.10        0.00
+GET      /product/9SIQT8TOJO                                                               90     0(0.00%) |     33      18      94     29 |    0.20        0.00
+GET      /product/L9ECAV7KIM                                                               77     0(0.00%) |     29      20      63     28 |    0.20        0.00
+GET      /product/LS4PSXUNUM                                                               70     0(0.00%) |     31      20      80     29 |    0.10        0.00
+GET      /product/OLJCESPC7Z                                                               60     0(0.00%) |     29      20      48     28 |    0.20        0.00
+POST     /setCurrency                                                                     100     0(0.00%) |     48      31     120     44 |    0.30        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1126     0(0.00%) |     35      16     254     31 |    3.00        0.00
+
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+GET      /                                                                                 65     0(0.00%) |     49      29     203     44 |    0.00        0.00
+GET      /cart                                                                            141     0(0.00%) |     28      16      93     25 |    0.20        0.00
+POST     /cart                                                                            145     0(0.00%) |     43      24     141     38 |    0.50        0.00
+POST     /cart/checkout                                                                    50     0(0.00%) |     47      27     254     39 |    0.30        0.00
+GET      /product/0PUK6V6EV0                                                               65     0(0.00%) |     29      20      61     26 |    0.20        0.00
+GET      /product/1YMWWN1N4O                                                               74     0(0.00%) |     33      20     128     28 |    0.30        0.00
+GET      /product/2ZYFJ3GM2N                                                               64     0(0.00%) |     30      20     100     27 |    0.10        0.00
+GET      /product/66VCHSJNUP                                                               69     0(0.00%) |     29      19      56     27 |    0.00        0.00
+GET      /product/6E92ZMYYFZ                                                               62     0(0.00%) |     28      19      89     26 |    0.00        0.00
+GET      /product/9SIQT8TOJO                                                               90     0(0.00%) |     33      18      94     29 |    0.20        0.00
+GET      /product/L9ECAV7KIM                                                               77     0(0.00%) |     29      20      63     28 |    0.20        0.00
+GET      /product/LS4PSXUNUM                                                               70     0(0.00%) |     31      20      80     29 |    0.10        0.00
+GET      /product/OLJCESPC7Z                                                               60     0(0.00%) |     29      20      48     28 |    0.20        0.00
+POST     /setCurrency                                                                     101     0(0.00%) |     48      31     120     44 |    0.30        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                      1133     0(0.00%) |     35      16     254     31 |    2.60        0.00
+
+
+
+$ kubectl get pods -n online-boutique \
+  -l app=loadgenerator
+NAME                             READY   STATUS    RESTARTS   AGE
+loadgenerator-549c665d59-n947w   1/1     Running   0          10m
+
+
+
+Verify Alloy is receiving application logs because we configure like below
+
+discovery.kubernetes "pods" {
+  role = "pod"
+}
+
+loki.source.kubernetes "pods" {
+  targets    = discovery.kubernetes.pods.targets
+  forward_to = [loki.write.monitoring.receiver]
+}
+
+Logql:
+=====
+{cluster="application-eks", environment="demo"}
+
+{cluster="application-eks", environment="demo", namespace="online-boutique"}
+
+
+✅ Application cluster → Alloy OTLP works
+✅ Alloy → Tempo works
+✅ Tempo → S3 works
+✅ Grafana → Tempo works
+✅ Manual telemetrygen traces appear
+✅ Application cluster logs appear in Loki
+❌ Application cluster metrics are not being collected by Alloy
+❌ Online Boutique application tracing is not enabled
+
+
+
+Why Application Cluster Metrics Are Missing
+
+prometheus.remote_write "monitoring" {
+  endpoint {
+    url = "http://PROMETHEUS-LB:9090/api/v1/write"
+  }
+
+  external_labels = {
+    cluster     = "application-eks",
+    environment = "demo",
+  }
+}
+
+
+NOTHING
+   ↓
+prometheus.remote_write
+   ↓
+Prometheus
+   ↓
+Thanos
+
+
+but the flow should be:
+
+Application Cluster
+        │
+        ▼
+   Metrics Collector
+        │
+        ▼
+      Alloy
+        │
+        ▼
+Prometheus Remote Write
+        │
+        ▼
+Monitoring Cluster Prometheus
+        │
+        ▼
+      Thanos
+        │
+        ▼
+      Grafana
+
+
+Install kube-state-metrics:
+==========================
+$ helm upgrade --install kube-state-metrics \
+  prometheus-community/kube-state-metrics \
+  -n kube-system
+
+
+$ kubectl get pods -n kube-system | grep kube-state-metrics
+kube-state-metrics-9c875c8d5-6689d              0/1     Running   0          10s
+
+
+$ kubectl get svc -n kube-system | grep kube-state-metrics
+kube-state-metrics                  ClusterIP   172.20.241.46   <none>        8080/TCP                 22s
+
+
+Test kube-state-metrics:
+======================
+kubectl run curl-test \
+  -n default \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl:latest \
+  -- \
+  curl http://kube-state-metrics.kube-system.svc.cluster.local:8080/metrics
+
+
+
+Application Cluster Metrics
+        ↓
+kube-state-metrics
+        ↓
+Alloy
+
+
+
+UPDATE ALLOY FILE:
+==================
+vi alloy-values.yaml
+alloy:
+  configMap:
+    create: true
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ============================================================
+      // PROMETHEUS REMOTE WRITE
+      // ============================================================
+
+      prometheus.remote_write "monitoring" {
+        endpoint {
+          url = "http://k8s-monitori-promethe-e0617ba28f-d5c130e99c27d8ba.elb.ap-south-1.amazonaws.com:9090/api/v1/write"
+        }
+      }
+
+
+      // ============================================================
+      // KUBERNETES POD DISCOVERY
+      // ============================================================
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+
+      // ============================================================
+      // DISCOVER PODS WITH prometheus.io/scrape=true
+      // ============================================================
+
+      discovery.relabel "metrics_pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_scrape",
+          ]
+
+          action = "keep"
+          regex  = "true"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_scheme",
+          ]
+
+          action       = "replace"
+          target_label = "__scheme__"
+          regex        = "(https?)"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_annotation_prometheus_io_path",
+          ]
+
+          action       = "replace"
+          target_label = "__metrics_path__"
+          regex        = "(.+)"
+        }
+
+        rule {
+          source_labels = [
+            "__address__",
+            "__meta_kubernetes_pod_annotation_prometheus_io_port",
+          ]
+
+          action       = "replace"
+          target_label = "__address__"
+          regex        = "(.+):(?:\\d+);(\\d+)"
+          replacement  = "$1:$2"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          action       = "replace"
+          target_label = "namespace"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          action       = "replace"
+          target_label = "pod"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_node_name",
+          ]
+
+          action       = "replace"
+          target_label = "node"
+        }
+
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          action       = "replace"
+          target_label = "app"
+        }
+
+        // IMPORTANT
+        // APPLICATION CLUSTER LABEL
+
+        rule {
+          action       = "replace"
+          target_label = "cluster"
+          replacement  = "application-eks"
+        }
+
+        rule {
+          action       = "replace"
+          target_label = "environment"
+          replacement  = "demo"
+        }
+      }
+
+
+      // ============================================================
+      // SCRAPE APPLICATION POD METRICS
+      // ============================================================
+
+      prometheus.scrape "pods" {
+        targets = discovery.relabel.metrics_pods.output
+
+        forward_to = [
+          prometheus.remote_write.monitoring.receiver,
+        ]
+
+        scrape_interval = "30s"
+      }
+
+      // ============================================================
+      // EXPLICIT KUBE-STATE-METRICS TARGET
+      // ============================================================
+
+      prometheus.scrape "kube_state_metrics" {
+        targets = [
+          {
+            "__address__" = "kube-state-metrics.kube-system.svc.cluster.local:8080",
+            "cluster"     = "application-eks",
+            "environment" = "demo",
+            "job"         = "kube-state-metrics",
+          },
+        ]
+
+        forward_to = [
+          prometheus.remote_write.monitoring.receiver,
+        ]
+
+        scrape_interval = "30s"
+      }
+
+
+
+      // ============================================================
+      // LOGS
+      // ============================================================
+
+      loki.source.kubernetes "pods" {
+
+        targets = discovery.kubernetes.pods.targets
+
+        forward_to = [
+          loki.write.monitoring.receiver,
+        ]
+      }
+
+
+      loki.write "monitoring" {
+
+        endpoint {
+          url = "http://k8s-monitori-lokiinge-a09257c812-8872d6d59604b187.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+        }
+
+        external_labels = {
+          cluster     = "application-eks",
+          environment = "demo",
+        }
+      }
+
+
+      // ============================================================
+      // OTLP RECEIVER
+      // ============================================================
+
+      otelcol.receiver.otlp "application" {
+
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+
+        output {
+          traces = [
+            otelcol.processor.batch.application.input,
+          ]
+        }
+      }
+
+
+      // ============================================================
+      // TRACE BATCH
+      // ============================================================
+
+      otelcol.processor.batch "application" {
+
+        output {
+          traces = [
+            otelcol.exporter.otlp.tempo.input,
+          ]
+        }
+      }
+
+
+      // ============================================================
+      // TEMPO EXPORTER
+      // ============================================================
+
+      otelcol.exporter.otlp "tempo" {
+
+        client {
+
+          endpoint = "k8s-monitori-tempoing-55de63d743-8734675630922384.elb.ap-south-1.amazonaws.com:4317"
+
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+Upgrade Alloy:
+=============
+$ helm upgrade alloy grafana/alloy   -n alloy   -f alloy-values.yaml
+
+$ kubectl get pods -n alloy
+NAME          READY   STATUS    RESTARTS   AGE
+alloy-4pzvb   2/2     Running   0          6h30m
+alloy-8fl9p   2/2     Running   0          6h31m
+
+
+kubectl run curl-test \
+  -n default \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl:latest \
+  -- \
+  curl http://kube-state-metrics.kube-system.svc.cluster.local:8080/metrics
+
+
+Checl alloy logs:
+===============
+$ kubectl logs \
+  -n alloy \
+  daemonset/alloy \
+  --tail=300 | grep -iE "scrape|remote_write|error|fail"
+
+
+
+add datasource:
+==============
+Datasource 1 - Prometheus-Live
+=============================
+
+http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+
+Purpose:
+=======
+
+Live Metrics
+Recent Metrics
+Debugging
+Application Metrics
+
+Datasource 2 — Thanos:
+=====================
+
+http://thanos-query.monitoring.svc.cluster.local:9090
+
+Purpose:
+=========
+
+Long-term Metrics
+S3 Historical Data
+Multi-cluster Query
+
+
+
+CHECK APPLICATION METRICS IN PROMETHEUS/THANOS:
+==============================================
+
+
+List deployments
+kube_deployment_owner{
+  cluster="application-eks",
+  namespace="online-boutique"
+}
+
+Deployment replicas:
+===================
+kube_deployment_status_replicas{
+  cluster="application-eks",
+  namespace="online-boutique"
+}
+
+
+Available replicas
+kube_deployment_status_replicas_available{
+  cluster="application-eks",
+  namespace="online-boutique"
+}
+
+
+Check application pods
+count by (pod) (
+  kube_pod_info{
+    cluster="application-eks",
+    namespace="online-boutique"
+  }
+)
+
+
+
+Check running pods
+sum by (namespace) (
+  kube_pod_status_phase{
+    cluster="application-eks",
+    namespace="online-boutique",
+    phase="Running"
+  }
+)
+
+
+Now for traces:
+===============
+
+vi alloy-otlp-service.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy-otlp
+  namespace: alloy
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: alloy
+    app.kubernetes.io/name: alloy
+
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+
+
+
+Install OpenTelemetry Operator:
+
+Install cert-manager first
+
+helm repo add jetstack https://charts.jetstack.io
+
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set crds.enabled=true
+
+
+$ kubectl get pods -n cert-manager
+NAME                                       READY   STATUS    RESTARTS   AGE
+cert-manager-689c4c5575-dwpcp              1/1     Running   0          22s
+cert-manager-cainjector-6fbb9c8cd6-bv5n7   1/1     Running   0          22s
+cert-manager-webhook-646c95c5ff-wrvxm      1/1     Running   0          22s
+
+
+$ kubectl get crd | grep cert-manager.io
+certificaterequests.cert-manager.io             2026-09-06T05:50:38Z
+certificates.cert-manager.io                    2026-09-06T05:50:38Z
+challenges.acme.cert-manager.io                 2026-09-06T05:50:38Z
+clusterissuers.cert-manager.io                  2026-09-06T05:50:38Z
+issuers.cert-manager.io                         2026-09-06T05:50:38Z
+orders.acme.cert-manager.io                     2026-09-06T05:50:38Z
+
+
+
+kubectl create namespace opentelemetry-operator
+
+$ helm repo add open-telemetry \
+https://open-telemetry.github.io/opentelemetry-helm-charts
+"open-telemetry" has been added to your repositories
+
+$ helm repo update
+
+helm install opentelemetry-operator \
+  open-telemetry/opentelemetry-operator \
+  --namespace opentelemetry-operator
+
+
+$ kubectl get pods -n opentelemetry-operator
+NAME                                      READY   STATUS    RESTARTS   AGE
+opentelemetry-operator-7db6c56646-rwmcp   1/1     Running   0          23s
+
+
+trace architecture will be:
+==========================
+ONLINE BOUTIQUE PODS
+        │
+        │ Auto Instrumentation
+        ▼
+OpenTelemetry Instrumentation
+        │
+        │ OTLP :4317/:4318
+        ▼
+ALLOY
+        │
+        │ OTLP
+        ▼
+TEMPO
+        │
+        ▼
+GRAFANA
+
+
+Create the Instrumentation Resource:
+==================================
+
+vi instrumentation.yaml
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: online-boutique-instrumentation
+  namespace: online-boutique
+
+spec:
+
+  exporter:
+    endpoint: http://alloy-otlp.alloy.svc.cluster.local:4317
+
+  propagators:
+    - tracecontext
+    - baggage
+    - b3
+
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+
+  python:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://alloy-otlp.alloy.svc.cluster.local:4318
+
+  nodejs:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://alloy-otlp.alloy.svc.cluster.local:4318
+
+  java:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://alloy-otlp.alloy.svc.cluster.local:4318
+
+  dotnet:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://alloy-otlp.alloy.svc.cluster.local:4318
+
+
+$ kubectl apply -f instrumentation.yaml
+instrumentation.opentelemetry.io/online-boutique-instrumentation created
+
+$ kubectl get instrumentation -n online-boutique
+NAME                              AGE   ENDPOINT                                         SAMPLER                    SAMPLER ARG
+online-boutique-instrumentation   51s   http://alloy-otlp.alloy.svc.cluster.local:4318   parentbased_traceidratio   1
+
+
+Instrument Frontend:
+==================
+kubectl annotate deployment frontend \
+  -n online-boutique \
+  instrumentation.opentelemetry.io/inject-go="online-boutique/online-boutique-instrumentation" \
+  --overwrite
+
+Verify annotation:
+
+$ kubectl get deployment frontend \
+  -n online-boutique \
+  -o jsonpath='{.spec.template.metadata.annotations}'
+
+
+{"sidecar.istio.io/rewriteAppHTTPProbers":"true"}
+
+
+Restart Frontend
+
+$ kubectl rollout restart deployment frontend \
+  -n online-boutique
+deployment.apps/frontend restarted
+
+
+$ kubectl get pods -n online-boutique
+NAME                                     READY   STATUS    RESTARTS   AGE
+adservice-748f6f68d4-p2gf9               1/1     Running   0          3h6m
+cartservice-9479b6c-68x6h                1/1     Running   0          3h6m
+checkoutservice-8458467c66-njnnr         1/1     Running   0          3h6m
+currencyservice-64b75b748-k5z4r          1/1     Running   0          3h6m
+emailservice-76c84c79d6-2cpb9            1/1     Running   0          3h6m
+frontend-64cfcc47b6-wwmcq                1/1     Running   0          20s
+loadgenerator-549c665d59-9fw9d           1/1     Running   0          3h6m
+paymentservice-5df7f57d78-zrjj2          1/1     Running   0          3h6m
+productcatalogservice-7dd48bf974-5858p   1/1     Running   0          3h6m
+recommendationservice-bb9db87fd-mpzfh    1/1     Running   0          3h6m
+redis-cart-788fbddc7-vzhw8               1/1     Running   0          3h6m
+shippingservice-768bf5c46b-z2pdg         1/1     Running   0          3h6m
+
+Inject Python Services
+
+Annotate emailservice:
+increase memory for email service
+
+kubectl patch deployment emailservice \
+  -n online-boutique \
+  --type='strategic' \
+  -p '{
+    "spec": {
+      "template": {
+        "spec": {
+          "containers": [
+            {
+              "name": "server",
+              "resources": {
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "128Mi"
+                },
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }'
+
+
+kubectl patch deployment emailservice \
+  -n online-boutique \
+  --type='merge' \
+  -p '{
+    "spec": {
+      "template": {
+        "metadata": {
+          "annotations": {
+            "instrumentation.opentelemetry.io/inject-python": "online-boutique-instrumentation"
+          }
+        }
+      }
+    }
+  }'
+
+$ kubectl rollout restart deployment emailservice \
+  -n online-boutique
+deployment.apps/emailservice restarted
+
+kubectl annotate deployment emailservice \
+  -n online-boutique \
+  instrumentation.opentelemetry.io/inject-python=online-boutique-instrumentation \
+  --overwrite
+
+Verify annotation:
+kubectl get deployment emailservice \
+  -n online-boutique \
+  -o jsonpath='{.spec.template.metadata.annotations}{"\n"}'
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject11
+$ kubectl get pods \
+  -n online-boutique \
+  -l app=emailservice
+NAME                            READY   STATUS    RESTARTS   AGE
+emailservice-76c84c79d6-2cpb9   1/1     Running   0          3h14m
+emailservice-856c744b65-2bllv   0/1     Running   0          12s
+
+Verify injection:
+=================
+$ kubectl get pod \
+  -n online-boutique \
+  -l app=emailservice \
+  -o jsonpath='{.items[0].spec.initContainers[*].name}{"\n"}'
+
+You should now see:
+
+opentelemetry-auto-instrumentation
+
+Instrument Node.js Services
+============================
+kubectl annotate deployment currencyservice \
+  -n online-boutique \
+  instrumentation.opentelemetry.io/inject-nodejs=online-boutique-instrumentation \
+  --overwrite
+
+kubectl rollout restart deployment currencyservice \
+  -n online-boutique
+
+Payment Service:
+===============
+kubectl annotate deployment paymentservice \
+  -n online-boutique \
+  instrumentation.opentelemetry.io/inject-nodejs=online-boutique-instrumentation \
+  --overwrite
+
+kubectl rollout restart deployment paymentservice \
+  -n online-boutique
+
+
+below pod Generate application traffic:
+
+kubectl get pods \
+  -n online-boutique \
+  -l app=loadgenerator
