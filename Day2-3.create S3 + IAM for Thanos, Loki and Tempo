@@ -1,0 +1,385 @@
+Switch to monitoring cluster
+kubectl config use-context monitoring-eks
+
+
+                    AWS S3
+                      │
+       ┌──────────────┼──────────────┐
+       │              │              │
+       ▼              ▼              ▼
+  Thanos S3       Loki S3         Tempo S3
+  Metrics          Logs            Traces
+       │              │              │
+       ▼              ▼              ▼
+  Thanos           Loki            Tempo
+
+
+Thanos ServiceAccount ──> Thanos IAM Role ──> Thanos S3
+Loki ServiceAccount   ──> Loki IAM Role   ──> Loki S3
+Tempo ServiceAccount  ──> Tempo IAM Role  ──> Tempo S3
+
+                         AWS
+                          │
+                    ┌─────┴─────┐
+                    │     S3    │
+                    └─────┬─────┘
+                          │
+          ┌───────────────┼────────────────┐
+          │               │                │
+          ▼               ▼                ▼
+     Thanos S3        Loki S3          Tempo S3
+      metrics           logs            traces
+          ▲               ▲                ▲
+          │               │                │
+    Thanos Pods       Loki Pods        Tempo Pods
+          │               │                │
+          └──────────── Monitoring EKS ─────┘
+
+
+We'll use three separate buckets:
+
+thanos-<account-id>-ap-south-1
+loki-<account-id>-ap-south-1
+tempo-<account-id>-ap-south-1
+
+Make sure AWS identity is correct
+aws sts get-caller-identity
+
+{
+    "UserId": "045667250694",
+    "Account": "045667250694",
+    "Arn": "arn:aws:iam::045667250694:root"
+}
+
+
+export AWS_REGION=ap-south-1
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+export THANOS_BUCKET="thanos-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+export LOKI_BUCKET="loki-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+export TEMPO_BUCKET="tempo-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+
+Verify:
+
+echo $AWS_ACCOUNT_ID
+echo $THANOS_BUCKET
+echo $LOKI_BUCKET
+echo $TEMPO_BUCKET
+
+Expected:
+
+045667250694
+thanos-045667250694-ap-south-1
+loki-045667250694-ap-south-1
+tempo-045667250694-ap-south-1
+
+
+Create the three S3 buckets
+
+$ aws s3api create-bucket \
+  --bucket "$THANOS_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+$ aws s3api create-bucket \
+  --bucket "$LOKI_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+$ aws s3api create-bucket \
+  --bucket "$TEMPO_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+Verify:
+$ aws s3 ls |grep -E "thanos|loki|tempo"
+2026-09-05 19:12:31 loki-045667250694-ap-south-1
+2026-09-05 19:12:37 tempo-045667250694-ap-south-1
+2026-09-05 19:12:21 thanos-045667250694-ap-south-1
+
+Enable S3 versioning
+
+aws s3api put-bucket-versioning \
+  --bucket "$THANOS_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket "$LOKI_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket "$TEMPO_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+
+Enable default S3 encryption:
+==============================
+aws s3api put-bucket-encryption \
+  --bucket "$THANOS_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+aws s3api put-bucket-encryption \
+  --bucket "$LOKI_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+aws s3api put-bucket-encryption \
+  --bucket "$TEMPO_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+Verify one:
+aws s3api get-bucket-encryption \
+  --bucket "$THANOS_BUCKET"
+
+Create IAM policies:
+==================
+Thanos IAM Role
+       │
+       └── Thanos S3 only
+
+Loki IAM Role
+       │
+       └── Loki S3 only
+
+Tempo IAM Role
+       │
+       └── Tempo S3 only
+
+Loki ❌ cannot access Thanos bucket
+Tempo ❌ cannot access Loki bucket
+Thanos ❌ cannot access Tempo bucket
+
+
+Thanos IAM policy:
+==================
+
+cat > thanos-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ThanosBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${THANOS_BUCKET}"
+    },
+    {
+      "Sid": "ThanosObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${THANOS_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+aws iam create-policy \
+  --policy-name ThanosS3AccessPolicy \
+  --policy-document file://thanos-s3-policy.json
+
+Loki IAM policy:
+===============
+
+cat > loki-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LokiBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${LOKI_BUCKET}"
+    },
+    {
+      "Sid": "LokiObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${LOKI_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+
+aws iam create-policy \
+  --policy-name LokiS3AccessPolicy \
+  --policy-document file://loki-s3-policy.json
+
+
+Tempo IAM policy:
+=================
+
+cat > tempo-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TempoBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${TEMPO_BUCKET}"
+    },
+    {
+      "Sid": "TempoObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${TEMPO_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+
+aws iam create-policy \
+  --policy-name TempoS3AccessPolicy \
+  --policy-document file://tempo-s3-policy.json
+
+
+Verify the policies:
+====================
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/ThanosS3AccessPolicy
+
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/LokiS3AccessPolicy
+
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/TempoS3AccessPolicy
+
+
+Create IAM service accounts in Monitoring EKS
+
+monitoring-eks
+     │
+     ├── thanos-s3
+     │
+     ├── loki-s3
+     │
+     └── tempo-s3
+
+
+Make sure you are in monitoring eks cluster
+kubectl config use-context monitoring-eks
+kubectl config current-context
+
+
+Create Thanos IAM service account:
+=================================
+
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name thanos-s3 \
+  --role-name ThanosS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/ThanosS3AccessPolicy \
+  --approve
+
+
+The above command automatically create monitoring namespace in monitoring cluster:
+
+Create Loki IAM service account:
+================================
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name loki-s3 \
+  --role-name LokiS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/LokiS3AccessPolicy \
+  --approve
+
+
+Create Tempo IAM service account:
+=================================
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name tempo-s3 \
+  --role-name TempoS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/TempoS3AccessPolicy \
+  --approve
+
+$ kubectl get serviceaccounts -n monitoring
+NAME        AGE
+default     2m28s
+loki-s3     54s
+tempo-s3    13s
+thanos-s3   2m28s
+
+
+Now verify the IAM annotations atelase for any one sarvice account:
+
+$ kubectl get sa thanos-s3 \
+  -n monitoring \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+
+expected output:
+arn:aws:iam::045667250694:role/ThanosS3Role
+
+
+Final S3/IAM validation:
+
+$ aws s3api head-bucket --bucket "$THANOS_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::thanos-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+$ aws s3api head-bucket --bucket "$LOKI_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::loki-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+
+$ aws s3api head-bucket --bucket "$TEMPO_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::tempo-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+                    Monitoring EKS
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+        ▼                ▼                ▼
+   user/thanos-s3   user/loki-s3     user/tempo-s3
+        │                │                │
+        ▼                ▼                ▼
+   ThanosS3Role       LokiS3Role       TempoS3Role
+        │                │                │
+        ▼                ▼                ▼
+  Thanos Bucket      Loki Bucket      Tempo Bucket
