@@ -1,0 +1,115 @@
+Tempo:
+======
+already create bucket and service account and policies
+
+$ aws s3api head-bucket \
+  --bucket "$TEMPO_BUCKET" \
+  --region "$AWS_REGION"
+{
+    "BucketArn": "arn:aws:s3:::tempo-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+$ kubectl get sa tempo-s3 \
+  -n monitoring \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+echo
+arn:aws:iam::045667250694:role/TempoS3Role
+
+Install Tempo:
+===========
+
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+helm repo update
+
+helm search repo grafana-community/tempo
+
+vi tempo-values.yaml
+====================
+tempo:
+  reportingEnabled: false
+
+  metricsGenerator:
+    enabled: false
+
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: tempo-045667250694-ap-south-1
+        endpoint: s3.ap-south-1.amazonaws.com
+        region: ap-south-1
+        insecure: false
+
+  retention: 168h
+
+serviceAccount:
+  create: false
+  name: tempo-s3
+
+persistence:
+  enabled: true
+  storageClassName: monitoring-gp3
+  accessModes:
+    - ReadWriteOnce
+  size: 20Gi
+
+tempoQuery:
+  enabled: false
+
+gateway:
+  enabled: false
+
+service:
+  type: ClusterIP
+
+traces:
+  otlp:
+    http:
+      enabled: true
+    grpc:
+      enabled: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+
+tempo-s3
+    ↓
+TempoS3Role
+    ↓
+S3 bucket
+
+
+
+
+helm upgrade --install tempo \
+  grafana-community/tempo \
+  --namespace monitoring \
+  --values tempo-values.yaml
+
+
+$ kubectl get pods -n monitoring  | grep tempo
+tempo-0                                                     1/1     Running   0          73
+
+$ kubectl get svc tempo -n monitoring
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                                                                                         AGE
+tempo   ClusterIP   172.20.160.175   <none>        6831/UDP,6832/UDP,3200/TCP,14268/TCP,14250/TCP,9411/TCP,55680/TCP,55681/TCP,4317/TCP,4318/TCP   11m
+
+$ kubectl get svc tempo -n monitoring -o yaml
+  - name: grpc-tempo-otlp
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: tempo-otlp-http
+    port: 4318
+    protocol: TCP
+    targetPort: 4318
+
+Grafana -->tempo-->http://tempo.monitoring.svc.cluster.local:3200
