@@ -1,0 +1,304 @@
+Prometheus HA:
+=======================
+
+                    Monitoring EKS
+                         │
+                monitoring namespace
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+              ▼                     ▼
+        Prometheus-0           Prometheus-1
+              │                     │
+        50 GB gp3 PVC          50 GB gp3 PVC
+              │                     │
+              └──────────┬──────────┘
+                         │
+                    Thanos Sidecar
+                         │
+                         ▼
+                    Thanos Query
+                         │
+                         ▼
+                    Grafana
+
+
+Prometheus keeps local persistent storage.
+So if Thanos/S3 becomes temporarily unavailable:
+
+Prometheus can continue retaining local data
+Later, Thanos will upload blocks to S3 once connectivity is available.
+
+Application
+    │
+    ▼
+   Alloy
+    │
+    ▼
+Prometheus
+    │
+    ├── Local WAL/PVC
+    │
+    └── Thanos Sidecar ──X── S3 temporarily unavailable
+
+
+Make sure you are on Monitoring EKS:
+
+kubectl config use-context monitoring-eks
+
+Verify the EBS CSI driver:
+=========================
+kubectl get pods -n kube-system \
+  -l app.kubernetes.io/name=aws-ebs-csi-driver
+
+kubectl get storageclass
+
+the abhove command will show gp2 alone, but we need to create disk as gp3
+
+Create a dedicated gp3 StorageClass:
+===================================
+cat > monitoring-gp3-storageclass.yaml <<'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: monitoring-gp3
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  fsType: ext4
+EOF
+
+
+kubectl apply -f monitoring-gp3-storageclass.yaml
+
+$ kubectl get storageclass
+NAME             PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+gp2              kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   false                  169m
+monitoring-gp3   ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   19s
+
+
+Add the Prometheus Helm repository:
+==================================
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+
+
+$ helm repo update
+
+$ helm search repo prometheus-community/kube-prometheus-stack
+NAME                                            CHART VERSION   APP VERSION     DESCRIPTION
+prometheus-community/kube-prometheus-stack      89.2.2          v0.93.1         kube-prometheus-stack collects Kubernetes manif...
+
+
+
+Create Prometheus configuration:
+================================
+
+cat > prometheus-values.yaml <<'EOF'
+prometheus:
+  enabled: true
+
+  prometheusSpec:
+
+    replicas: 2
+
+    replicaExternalLabelName: prometheus_replica
+
+    externalLabels:
+      cluster: monitoring-eks
+      environment: demo
+
+    retention: 24h
+
+    retentionSize: "40GB"
+
+    walCompression: true
+
+    enableRemoteWriteReceiver: true
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: monitoring-gp3
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+grafana:
+  enabled: false
+
+alertmanager:
+  enabled: false
+
+kube-state-metrics:
+  enabled: true
+
+prometheus-node-exporter:
+  enabled: true
+
+defaultRules:
+  create: true
+EOF
+
+
+
+Install kube-prometheus-stack:
+=============================
+
+helm upgrade --install kube-prometheus-stack \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace \
+  --values prometheus-values.yaml
+
+Check Prometheus pods created or not:
+===================================
+$ kubectl get pods -n monitoring
+NAME                                                        READY   STATUS    RESTARTS   AGE
+kube-prometheus-stack-kube-state-metrics-85c5c86755-zb5x6   1/1     Running   0          89s
+kube-prometheus-stack-operator-577666cc6d-hsb2w             1/1     Running   0          89s
+kube-prometheus-stack-prometheus-node-exporter-gp869        1/1     Running   0          89s
+kube-prometheus-stack-prometheus-node-exporter-t8cm2        1/1     Running   0          89s
+prometheus-kube-prometheus-stack-prometheus-0               2/2     Running   0          84s
+prometheus-kube-prometheus-stack-prometheus-1               2/2     Running   0          83s
+
+Verify PVCs:
+===========
+$ kubectl get pvc -n monitoring
+NAME                                                                                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS     VOLUMEATTRIBUTESCLASS   AGE
+prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0   Bound    pvc-19e205a0-2e0f-46c9-aa05-1307062cc5b9   50Gi       RWO
+ monitoring-gp3   <unset>                 3m36s
+prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-1   Bound    pvc-2ff70c38-41ae-4abb-b72c-584d8890368d   50Gi       RWO
+ monitoring-gp3   <unset>                 3m36s
+
+
+Verify the Prometheus StatefulSet:
+=================================
+$ kubectl get statefulset -n monitoring
+NAME                                          READY   AGE
+prometheus-kube-prometheus-stack-prometheus   2/2     4m25s
+
+Verify Prometheus services:
+===========================
+$ kubectl get svc -n monitoring | grep prometheus
+kube-prometheus-stack-kube-state-metrics         ClusterIP   172.20.155.97    <none>        8080/TCP            6m9s
+kube-prometheus-stack-operator                   ClusterIP   172.20.163.239   <none>        443/TCP             6m9s
+kube-prometheus-stack-prometheus                 ClusterIP   172.20.246.103   <none>        9090/TCP,8080/TCP   6m9s
+kube-prometheus-stack-prometheus-node-exporter   ClusterIP   172.20.177.97    <none>        9100/TCP            6m9s
+prometheus-operated                              ClusterIP   None             <none>        9090/TCP            6m4s
+
+Prometheus will remain private inside the monitoring VPC.
+Later, if required for Alloy remote-write, we will create an internal NLB.
+
+Application VPC
+10.10.0.0/16
+      │
+      │ VPC Peering
+      │
+      ▼
+Monitoring VPC
+10.20.0.0/16
+      │
+      ▼
+Internal NLB
+      │
+      ▼
+Prometheus
+
+Verify Prometheus configuration:
+===============================
+$ kubectl get prometheus \
+  -n monitoring \
+  kube-prometheus-stack-prometheus \
+  -o yaml
+
+
+$ kubectl get prometheus \
+  -n monitoring \
+  kube-prometheus-stack-prometheus \
+  -o jsonpath='{.spec.externalLabels}'
+{"cluster":"monitoring-eks","environment":"demo"}
+
+
+Verify Prometheus is actually scraping metrics:
+==============================================
+$ kubectl port-forward \
+  -n monitoring \
+  svc/kube-prometheus-stack-prometheus \
+  9090:9090
+Forwarding from 127.0.0.1:9090 -> 9090
+
+From another Git Bash terminal or from your browser:
+
+$ curl "http://localhost:9090/-/ready"
+Prometheus Server is Ready.
+
+$ curl "http://localhost:9090/api/v1/query?query=up"
+{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"up","endpoint":"https-metrics","instance":"10.20.11.152:10250","job":"kubelet","metrics_p
+
+$ curl "http://localhost:9090/api/v1/targets"
+
+
+Verify remote-write receiver:
+============================
+
+$ kubectl get pod \
+  prometheus-kube-prometheus-stack-prometheus-0 \
+  -n monitoring \
+  -o jsonpath='{.spec.containers[0].args}'
+
+Look for:
+--web.enable-remote-write-receiver
+
+This is important because later:
+================================
+Application EKS
+      │
+     Alloy
+      │
+      │ Prometheus remote_write
+      ▼
+Monitoring EKS
+      │
+ Prometheus receiver
+
+
+
+at this phase:
+
+                 APPLICATION EKS
+                 10.10.0.0/16
+                       │
+                       │
+                    Alloy
+                       │
+                       │
+                 VPC PEERING
+                       │
+                       ▼
+                MONITORING EKS
+                10.20.0.0/16
+                       │
+              ┌────────┴────────┐
+              │                 │
+              ▼                 ▼
+        Prometheus-0       Prometheus-1
+              │                 │
+              ▼                 ▼
+           50Gi gp3          50Gi gp3
+              │                 │
+              └────────┬────────┘
+                       │
+                  HA Prometheus
