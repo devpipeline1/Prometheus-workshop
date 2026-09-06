@@ -1,0 +1,597 @@
+
+WARNING: IMPORTANT:
+Review remaining NAT Gateways and LoadBalancers and public elastic IP's and remove manually.
+They can continue generating AWS charges.
+
+
+
+vi cleanupawsinfra.sh
+#!/bin/bash
+
+set -u
+
+#############################################
+# AWS EKS OBSERVABILITY INFRA CLEANUP
+#############################################
+
+REGION="ap-south-1"
+
+# Known infrastructure
+APP_VPC_ID="vpc-073622fabdeda02e5"
+MON_VPC_ID="vpc-04ee5884d92422db8"
+PEERING_ID="pcx-06a7d0b4408187f37"
+
+MON_CLUSTER="monitoring-eks"
+
+#############################################
+# COLORS
+#############################################
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+#############################################
+# FUNCTIONS
+#############################################
+
+header() {
+  echo
+  echo "===================================================="
+  echo "$1"
+  echo "===================================================="
+}
+
+success() {
+  echo -e "${GREEN}SUCCESS:${NC} $1"
+}
+
+warning() {
+  echo -e "${YELLOW}WARNING:${NC} $1"
+}
+
+error() {
+  echo -e "${RED}ERROR:${NC} $1"
+}
+
+info() {
+  echo -e "${BLUE}INFO:${NC} $1"
+}
+
+#############################################
+# START
+#############################################
+
+clear
+
+echo
+echo "####################################################"
+echo "#                                                  #"
+echo "#      AWS EKS OBSERVABILITY CLEANUP SCRIPT       #"
+echo "#                                                  #"
+echo "####################################################"
+
+echo
+
+echo "Region:"
+echo "  $REGION"
+
+echo
+
+echo "Application VPC:"
+echo "  $APP_VPC_ID"
+
+echo
+
+echo "Monitoring VPC:"
+echo "  $MON_VPC_ID"
+
+echo
+
+echo "VPC Peering:"
+echo "  $PEERING_ID"
+
+echo
+
+#############################################
+# GET APPLICATION CLUSTER
+#############################################
+
+header "AVAILABLE EKS CLUSTERS"
+
+aws eks list-clusters \
+  --region "$REGION" \
+  --output table || true
+
+echo
+
+read -p "Enter Application EKS cluster name: " APP_CLUSTER
+
+echo
+
+#############################################
+# GET S3 BUCKET
+#############################################
+
+header "S3 BUCKET"
+
+echo
+echo "List of S3 buckets:"
+echo
+
+aws s3 ls
+
+echo
+
+read -p "Enter Thanos S3 bucket name to DELETE: " THANOS_BUCKET
+
+echo
+
+#############################################
+# FINAL CONFIRMATION
+#############################################
+
+echo "####################################################"
+echo "#                    WARNING                       #"
+echo "####################################################"
+
+echo
+
+echo "This will DELETE the following resources:"
+
+echo
+
+echo "Application Cluster:"
+echo "  $APP_CLUSTER"
+
+echo
+
+echo "Monitoring Cluster:"
+echo "  $MON_CLUSTER"
+
+echo
+
+echo "Application VPC:"
+echo "  $APP_VPC_ID"
+
+echo
+
+echo "Monitoring VPC:"
+echo "  $MON_VPC_ID"
+
+echo
+
+echo "VPC Peering:"
+echo "  $PEERING_ID"
+
+echo
+
+echo "Thanos S3 Bucket:"
+echo "  $THANOS_BUCKET"
+
+echo
+
+echo "THIS OPERATION CANNOT BE UNDONE."
+
+echo
+
+read -p "Type DELETE-EVERYTHING to continue: " CONFIRM
+
+if [ "$CONFIRM" != "DELETE-EVERYTHING" ]; then
+
+  echo
+  warning "Cleanup cancelled."
+  exit 0
+
+fi
+
+#############################################
+# STEP 1
+# DELETE APPLICATION CLUSTER WORKLOADS
+#############################################
+
+header "STEP 1 - CLEAN APPLICATION EKS"
+
+if aws eks describe-cluster \
+  --name "$APP_CLUSTER" \
+  --region "$REGION" \
+  >/dev/null 2>&1; then
+
+  info "Updating kubeconfig..."
+
+  aws eks update-kubeconfig \
+    --region "$REGION" \
+    --name "$APP_CLUSTER" || true
+
+  echo
+
+  info "Current Kubernetes context:"
+
+  kubectl config current-context || true
+
+  echo
+
+  ###########################################
+  # DELETE LOADBALANCER SERVICES
+  ###########################################
+
+  info "Listing LoadBalancer services..."
+
+  kubectl get svc -A \
+    --field-selector spec.type=LoadBalancer || true
+
+  echo
+
+  info "Deleting Online Boutique..."
+
+  kubectl delete namespace online-boutique \
+    --ignore-not-found=true \
+    --wait=false || true
+
+  echo
+
+  info "Deleting Alloy..."
+
+  kubectl delete namespace alloy \
+    --ignore-not-found=true \
+    --wait=false || true
+
+  echo
+
+  info "Deleting OpenTelemetry Operator..."
+
+  kubectl delete namespace opentelemetry-operator \
+    --ignore-not-found=true \
+    --wait=false || true
+
+  echo
+
+  info "Waiting for LoadBalancer cleanup..."
+
+  sleep 60
+
+  echo
+
+  success "Application workloads cleanup initiated."
+
+else
+
+  warning "Application EKS cluster not found."
+
+fi
+
+#############################################
+# STEP 2
+# CLEAN MONITORING CLUSTER
+#############################################
+
+header "STEP 2 - CLEAN MONITORING EKS"
+
+if aws eks describe-cluster \
+  --name "$MON_CLUSTER" \
+  --region "$REGION" \
+  >/dev/null 2>&1; then
+
+  info "Updating kubeconfig..."
+
+  aws eks update-kubeconfig \
+    --region "$REGION" \
+    --name "$MON_CLUSTER" || true
+
+  echo
+
+  info "Current Kubernetes context:"
+
+  kubectl config current-context || true
+
+  echo
+
+  ###########################################
+  # SHOW LOADBALANCERS
+  ###########################################
+
+  info "LoadBalancer services before cleanup:"
+
+  kubectl get svc -A \
+    --field-selector spec.type=LoadBalancer || true
+
+  echo
+
+  ###########################################
+  # DELETE MONITORING NAMESPACE
+  ###########################################
+
+  info "Deleting monitoring namespace..."
+
+  kubectl delete namespace monitoring \
+    --ignore-not-found=true \
+    --wait=false || true
+
+  echo
+
+  ###########################################
+  # DELETE AWS LOAD BALANCER CONTROLLER
+  ###########################################
+
+  info "Deleting AWS Load Balancer Controller..."
+
+  kubectl delete deployment \
+    aws-load-balancer-controller \
+    -n kube-system \
+    --ignore-not-found=true || true
+
+  echo
+
+  info "Waiting for LoadBalancer cleanup..."
+
+  sleep 90
+
+  echo
+
+  success "Monitoring workloads cleanup initiated."
+
+else
+
+  warning "Monitoring EKS cluster not found."
+
+fi
+
+#############################################
+# STEP 3
+# SHOW REMAINING LOAD BALANCERS
+#############################################
+
+header "STEP 3 - CHECK AWS LOAD BALANCERS"
+
+echo
+
+aws elbv2 describe-load-balancers \
+  --region "$REGION" \
+  --query 'LoadBalancers[].{Name:LoadBalancerName,Type:Type,State:State.Code,DNS:DNSName}' \
+  --output table || true
+
+echo
+
+warning "Review the LoadBalancers above."
+
+echo
+
+read -p "Press ENTER to continue with EKS cluster deletion..."
+
+#############################################
+# STEP 4
+# DELETE APPLICATION EKS
+#############################################
+
+header "STEP 4 - DELETE APPLICATION EKS"
+
+if aws eks describe-cluster \
+  --name "$APP_CLUSTER" \
+  --region "$REGION" \
+  >/dev/null 2>&1; then
+
+  info "Deleting Application EKS cluster..."
+
+  eksctl delete cluster \
+    --name "$APP_CLUSTER" \
+    --region "$REGION" \
+    --wait \
+    --disable-nodegroup-eviction
+
+  success "Application EKS deletion completed."
+
+else
+
+  warning "Application EKS cluster already deleted."
+
+fi
+
+#############################################
+# STEP 5
+# DELETE MONITORING EKS
+#############################################
+
+header "STEP 5 - DELETE MONITORING EKS"
+
+if aws eks describe-cluster \
+  --name "$MON_CLUSTER" \
+  --region "$REGION" \
+  >/dev/null 2>&1; then
+
+  info "Deleting Monitoring EKS cluster..."
+
+  eksctl delete cluster \
+    --name "$MON_CLUSTER" \
+    --region "$REGION" \
+    --wait \
+    --disable-nodegroup-eviction
+
+  success "Monitoring EKS deletion completed."
+
+else
+
+  warning "Monitoring EKS cluster already deleted."
+
+fi
+
+#############################################
+# STEP 6
+# DELETE VPC PEERING
+#############################################
+
+header "STEP 6 - DELETE VPC PEERING"
+
+PEERING_STATUS=$(aws ec2 describe-vpc-peering-connections \
+  --region "$REGION" \
+  --vpc-peering-connection-ids "$PEERING_ID" \
+  --query 'VpcPeeringConnections[0].Status.Code' \
+  --output text 2>/dev/null || echo "NOT_FOUND")
+
+echo
+
+info "Peering status: $PEERING_STATUS"
+
+if [ "$PEERING_STATUS" != "NOT_FOUND" ] && \
+   [ "$PEERING_STATUS" != "deleted" ]; then
+
+  info "Deleting VPC Peering..."
+
+  aws ec2 delete-vpc-peering-connection \
+    --region "$REGION" \
+    --vpc-peering-connection-id "$PEERING_ID" \
+    || true
+
+  success "VPC Peering deletion initiated."
+
+else
+
+  warning "VPC Peering already deleted or not found."
+
+fi
+
+#############################################
+# STEP 7
+# DELETE S3 BUCKET
+#############################################
+
+header "STEP 7 - DELETE THANOS S3 BUCKET"
+
+if [ -n "$THANOS_BUCKET" ]; then
+
+  info "Deleting ALL objects and bucket..."
+
+  aws s3 rb \
+    "s3://$THANOS_BUCKET" \
+    --force \
+    --region "$REGION" \
+    || true
+
+  success "S3 bucket deletion initiated."
+
+else
+
+  warning "No S3 bucket specified."
+
+fi
+
+#############################################
+# STEP 8
+# CHECK REMAINING NETWORK RESOURCES
+#############################################
+
+header "STEP 8 - CHECK APPLICATION VPC RESOURCES"
+
+echo
+
+echo "Application VPC:"
+echo "$APP_VPC_ID"
+
+echo
+
+aws ec2 describe-instances \
+  --region "$REGION" \
+  --filters \
+    "Name=vpc-id,Values=$APP_VPC_ID" \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query 'Reservations[].Instances[].{ID:InstanceId,State:State.Name,Type:InstanceType}' \
+  --output table || true
+
+echo
+
+aws ec2 describe-nat-gateways \
+  --region "$REGION" \
+  --filter "Name=vpc-id,Values=$APP_VPC_ID" \
+  --query 'NatGateways[].{ID:NatGatewayId,State:State}' \
+  --output table || true
+
+#############################################
+
+header "STEP 9 - CHECK MONITORING VPC RESOURCES"
+
+echo
+
+echo "Monitoring VPC:"
+echo "$MON_VPC_ID"
+
+echo
+
+aws ec2 describe-instances \
+  --region "$REGION" \
+  --filters \
+    "Name=vpc-id,Values=$MON_VPC_ID" \
+    "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+  --query 'Reservations[].Instances[].{ID:InstanceId,State:State.Name,Type:InstanceType}' \
+  --output table || true
+
+echo
+
+aws ec2 describe-nat-gateways \
+  --region "$REGION" \
+  --filter "Name=vpc-id,Values=$MON_VPC_ID" \
+  --query 'NatGateways[].{ID:NatGatewayId,State:State}' \
+  --output table || true
+
+#############################################
+# FINAL SUMMARY
+#############################################
+
+header "FINAL AWS RESOURCE CHECK"
+
+echo
+
+echo "Remaining EKS Clusters:"
+
+aws eks list-clusters \
+  --region "$REGION" \
+  --output table || true
+
+echo
+
+echo "Remaining LoadBalancers:"
+
+aws elbv2 describe-load-balancers \
+  --region "$REGION" \
+  --query 'LoadBalancers[].{Name:LoadBalancerName,Type:Type,DNS:DNSName}' \
+  --output table || true
+
+echo
+
+echo "Remaining NAT Gateways:"
+
+aws ec2 describe-nat-gateways \
+  --region "$REGION" \
+  --filter "Name=state,Values=available,pending,deleting" \
+  --query 'NatGateways[].{ID:NatGatewayId,VPC:VpcId,State:State}' \
+  --output table || true
+
+echo
+
+echo "Remaining VPCs:"
+
+aws ec2 describe-vpcs \
+  --region "$REGION" \
+  --query 'Vpcs[].{VpcId:VpcId,CIDR:CidrBlock,Default:IsDefault}' \
+  --output table || true
+
+echo
+
+echo "####################################################"
+echo "#                                                  #"
+echo "#              CLEANUP COMPLETED                  #"
+echo "#                                                  #"
+echo "####################################################"
+
+echo
+
+warning "IMPORTANT:"
+echo "Review remaining NAT Gateways and LoadBalancers."
+echo "They can continue generating AWS charges."
+
+echo
+
+success "Infrastructure cleanup script finished."
+
+Windows@DESKTOP-9HVNDLS MINGW64 /c/eksproject11
+$
