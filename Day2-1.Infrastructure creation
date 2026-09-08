@@ -67,7 +67,8 @@ AWS
       └── Grafana
 
 
-
+vi networksetup.sh
+==================
 #!/bin/bash
 
 set -euo pipefail
