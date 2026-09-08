@@ -154,10 +154,10 @@ prometheus:
           key: objstore.yml
 
     thanosService:
-      enabled: true
+      enabled: false
 
     thanosServiceMonitor:
-      enabled: true
+      enabled: false
 
 grafana:
   enabled: false
@@ -183,6 +183,32 @@ helm upgrade kube-prometheus-stack \
   prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --values prometheus-thanos-values.yaml
+
+
+
+vi prometheus-thanos-sidecar-service.yaml
+=========================================
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: prometheus-thanos-sidecar
+  namespace: monitoring
+
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+    prometheus: kube-prometheus-stack-prometheus
+  ports:
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+      protocol: TCP
+
+$ kubectl get svc -n monitoring | grep prometheus-thanos-sidecar
+prometheus-thanos-sidecar                        ClusterIP      172.20.73.137    <none>                                                                          10901/TCP            15m
+
 
 Watch Prometheus pods restart or not:
 ====================================
@@ -330,7 +356,7 @@ query:
     enabled: false
 
   stores:
-    - kube-prometheus-stack-thanos-discovery.monitoring.svc.cluster.local:10901
+    - prometheus-thanos-sidecar.monitoring.svc.cluster.local:10901
 
   service:
     type: ClusterIP
@@ -406,14 +432,14 @@ thanos-compactor                                                                
 Check Thanos services:
 ====================
 
-$ kubectl get svc -n monitoring | grep thanos
-thanos-bucketweb                                 ClusterIP   172.20.14.99     <none>        8080/TCP             3m6s
-thanos-compactor                                 ClusterIP   172.20.68.31     <none>        9090/TCP             3m6s
-thanos-query                                     ClusterIP   172.20.41.231    <none>        9090/TCP             3m6s
-thanos-query-frontend                            ClusterIP   172.20.207.28    <none>        9090/TCP             3m6s
-thanos-query-grpc                                ClusterIP   172.20.196.213   <none>        10901/TCP            3m6s
-thanos-storegateway                              ClusterIP   172.20.114.63    <none>        9090/TCP,10901/TCP   3m6s
-
+$  kubectl get svc -n monitoring | grep thanos
+prometheus-thanos-sidecar                        ClusterIP      172.20.73.137    <none>                                                                          10901/TCP            16m
+thanos-bucketweb                                 ClusterIP      172.20.8.150     <none>                                                                          8080/TCP             92m
+thanos-compactor                                 ClusterIP      172.20.145.158   <none>                                                                          9090/TCP             92m
+thanos-query                                     ClusterIP      172.20.14.18     <none>                                                                          9090/TCP             92m
+thanos-query-frontend                            ClusterIP      172.20.130.78    <none>                                                                          9090/TCP             92m
+thanos-query-grpc                                ClusterIP      172.20.3.103     <none>                                                                          10901/TCP            92m
+thanos-storegateway                              ClusterIP      172.20.81.119    <none>                                                                          9090/TCP,10901/TCP   92m
 
 Check Query logs:
 ==================
