@@ -910,8 +910,9 @@ echo
 echo "Network setup is ready."
 
 
-chmod +x networksetup.sh
 
+chmod +x networksetup.sh
+sh networksetup.sh
 
 STEP 1  Network                         ✅ DONE
    |
