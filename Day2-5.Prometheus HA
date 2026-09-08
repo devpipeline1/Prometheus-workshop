@@ -112,7 +112,7 @@ prometheus:
 
     retention: 24h
 
-    retentionSize: "40GB"
+    retentionSize: "50GB"
 
     walCompression: true
 
