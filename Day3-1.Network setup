@@ -1,0 +1,1193 @@
+
+                 AWS
+                  │
+       ┌──────────┴──────────┐
+       │                     │
+ Application VPC       Monitoring VPC
+  10.10.0.0/16          10.20.0.0/16
+       │                     │
+
+
+
+Application VPC                         Monitoring VPC
+10.10.0.0/16                            10.20.0.0/16
+
+Public subnet 1                         Public subnet 1
+10.10.1.0/24                            10.20.1.0/24
+Public subnet 2                         Public subnet 2
+10.10.2.0/24                            10.20.2.0/24
+
+Private subnet 1                        Private subnet 1
+10.10.11.0/24                           10.20.11.0/24
+Private subnet 2                        Private subnet 2
+10.10.12.0/24                           10.20.12.0/24
+
+       │                                      │
+       └──────────── VPC PEERING ─────────────┘
+
+
+
+                    AWS
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+     APP VPC                 MONITORING VPC
+     10.10.0.0/16            10.20.0.0/16
+          │                     │
+    application-eks        monitoring-eks
+          │                     │
+          │                     │
+     AWS LBC                AWS LBC
+          │                     │
+          └────── VPC PEERING ──┘
+                pcx-06f3d55a3c15322ff
+
+
+AWS
+│
+├── Application VPC
+│     CIDR: 10.10.0.0/16
+│
+│     Contains:
+│     ├── Application EKS Cluster
+│     ├── Online Boutique
+│     ├── Grafana Alloy
+│     └── Application Load Balancer / NLB
+│
+│
+└── Monitoring VPC
+      CIDR: 10.20.0.0/16
+
+      Contains:
+      ├── Monitoring EKS Cluster
+      ├── Prometheus
+      ├── Thanos
+      ├── Loki
+      ├── Tempo
+      └── Grafana
+
+
+vi networksetup.sh
+==================
+
+$ cat networksetup.sh
+#!/bin/bash
+
+set -e
+
+# ============================================================
+# TWO-VPC EKS OBSERVABILITY WORKSHOP
+#
+# Application VPC
+#   EasyTrade
+#   Grafana Alloy
+#   OpenTelemetry
+#
+# Monitoring VPC
+#   Grafana Mimir
+#   Grafana Loki
+#   Grafana Tempo
+#   Grafana
+#
+# Region:
+#   ap-south-1
+#
+# ============================================================
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+export AWS_REGION="ap-south-1"
+
+export APP_CLUSTER_NAME="application-eks"
+export MON_CLUSTER_NAME="monitoring-eks"
+
+export APP_VPC_CIDR="10.10.0.0/16"
+export MON_VPC_CIDR="10.20.0.0/16"
+
+export AZ1="ap-south-1a"
+export AZ2="ap-south-1b"
+
+
+# ============================================================
+# APPLICATION VPC SUBNET CIDRS
+# ============================================================
+
+export APP_PUBLIC_1_CIDR="10.10.1.0/24"
+export APP_PUBLIC_2_CIDR="10.10.2.0/24"
+
+export APP_PRIVATE_1_CIDR="10.10.11.0/24"
+export APP_PRIVATE_2_CIDR="10.10.12.0/24"
+
+
+# ============================================================
+# MONITORING VPC SUBNET CIDRS
+# ============================================================
+
+export MON_PUBLIC_1_CIDR="10.20.1.0/24"
+export MON_PUBLIC_2_CIDR="10.20.2.0/24"
+
+export MON_PRIVATE_1_CIDR="10.20.11.0/24"
+export MON_PRIVATE_2_CIDR="10.20.12.0/24"
+
+
+echo "============================================================"
+echo "AWS EKS OBSERVABILITY WORKSHOP"
+echo "NETWORK SETUP"
+echo "============================================================"
+
+echo ""
+echo "Region:"
+echo "$AWS_REGION"
+
+echo ""
+echo "Application VPC:"
+echo "$APP_VPC_CIDR"
+
+echo ""
+echo "Monitoring VPC:"
+echo "$MON_VPC_CIDR"
+
+echo ""
+
+
+# ============================================================
+# GET AWS ACCOUNT ID
+# ============================================================
+
+echo "============================================================"
+echo "GETTING AWS ACCOUNT ID"
+echo "============================================================"
+
+export ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account \
+  --output text)
+
+echo "AWS Account ID:"
+echo "$ACCOUNT_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION VPC
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION VPC"
+echo "============================================================"
+
+export APP_VPC_ID=$(aws ec2 create-vpc \
+  --region "$AWS_REGION" \
+  --cidr-block "$APP_VPC_CIDR" \
+  --query 'Vpc.VpcId' \
+  --output text)
+
+echo "Application VPC ID:"
+echo "$APP_VPC_ID"
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_VPC_ID" \
+  --tags \
+    Key=Name,Value=application-vpc \
+    Key=Environment,Value=demo \
+    Key=Project,Value=eks-observability-workshop
+
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --enable-dns-support "{\"Value\":true}"
+
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --enable-dns-hostnames "{\"Value\":true}"
+
+
+echo "Application VPC created successfully"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING VPC
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING VPC"
+echo "============================================================"
+
+export MON_VPC_ID=$(aws ec2 create-vpc \
+  --region "$AWS_REGION" \
+  --cidr-block "$MON_VPC_CIDR" \
+  --query 'Vpc.VpcId' \
+  --output text)
+
+echo "Monitoring VPC ID:"
+echo "$MON_VPC_ID"
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_VPC_ID" \
+  --tags \
+    Key=Name,Value=monitoring-vpc \
+    Key=Environment,Value=demo \
+    Key=Project,Value=eks-observability-workshop
+
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --enable-dns-support "{\"Value\":true}"
+
+
+aws ec2 modify-vpc-attribute \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --enable-dns-hostnames "{\"Value\":true}"
+
+
+echo "Monitoring VPC created successfully"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION INTERNET GATEWAY
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION INTERNET GATEWAY"
+echo "============================================================"
+
+export APP_IGW_ID=$(aws ec2 create-internet-gateway \
+  --region "$AWS_REGION" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_IGW_ID" \
+  --tags \
+    Key=Name,Value=application-igw
+
+
+aws ec2 attach-internet-gateway \
+  --region "$AWS_REGION" \
+  --internet-gateway-id "$APP_IGW_ID" \
+  --vpc-id "$APP_VPC_ID"
+
+
+echo "Application IGW:"
+echo "$APP_IGW_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING INTERNET GATEWAY
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING INTERNET GATEWAY"
+echo "============================================================"
+
+export MON_IGW_ID=$(aws ec2 create-internet-gateway \
+  --region "$AWS_REGION" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_IGW_ID" \
+  --tags \
+    Key=Name,Value=monitoring-igw
+
+
+aws ec2 attach-internet-gateway \
+  --region "$AWS_REGION" \
+  --internet-gateway-id "$MON_IGW_ID" \
+  --vpc-id "$MON_VPC_ID"
+
+
+echo "Monitoring IGW:"
+echo "$MON_IGW_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION SUBNETS
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION SUBNETS"
+echo "============================================================"
+
+
+# ------------------------------------------------------------
+# Application Public Subnet 1
+# ------------------------------------------------------------
+
+export APP_PUBLIC_1_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PUBLIC_1_CIDR" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PUBLIC_1_ID" \
+  --tags \
+    Key=Name,Value=application-public-$AZ1 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=public
+
+
+# ------------------------------------------------------------
+# Application Public Subnet 2
+# ------------------------------------------------------------
+
+export APP_PUBLIC_2_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PUBLIC_2_CIDR" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PUBLIC_2_ID" \
+  --tags \
+    Key=Name,Value=application-public-$AZ2 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=public
+
+
+# ------------------------------------------------------------
+# Application Private Subnet 1
+# ------------------------------------------------------------
+
+export APP_PRIVATE_1_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PRIVATE_1_CIDR" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PRIVATE_1_ID" \
+  --tags \
+    Key=Name,Value=application-private-$AZ1 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=private
+
+
+# ------------------------------------------------------------
+# Application Private Subnet 2
+# ------------------------------------------------------------
+
+export APP_PRIVATE_2_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --cidr-block "$APP_PRIVATE_2_CIDR" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PRIVATE_2_ID" \
+  --tags \
+    Key=Name,Value=application-private-$AZ2 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=private
+
+
+echo "Application Subnets Created"
+
+echo "Public 1:"
+echo "$APP_PUBLIC_1_ID"
+
+echo "Public 2:"
+echo "$APP_PUBLIC_2_ID"
+
+echo "Private 1:"
+echo "$APP_PRIVATE_1_ID"
+
+echo "Private 2:"
+echo "$APP_PRIVATE_2_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING SUBNETS
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING SUBNETS"
+echo "============================================================"
+
+
+# ------------------------------------------------------------
+# Monitoring Public Subnet 1
+# ------------------------------------------------------------
+
+export MON_PUBLIC_1_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PUBLIC_1_CIDR" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PUBLIC_1_ID" \
+  --tags \
+    Key=Name,Value=monitoring-public-$AZ1 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=public
+
+
+# ------------------------------------------------------------
+# Monitoring Public Subnet 2
+# ------------------------------------------------------------
+
+export MON_PUBLIC_2_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PUBLIC_2_CIDR" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PUBLIC_2_ID" \
+  --tags \
+    Key=Name,Value=monitoring-public-$AZ2 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=public
+
+
+# ------------------------------------------------------------
+# Monitoring Private Subnet 1
+# ------------------------------------------------------------
+
+export MON_PRIVATE_1_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PRIVATE_1_CIDR" \
+  --availability-zone "$AZ1" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PRIVATE_1_ID" \
+  --tags \
+    Key=Name,Value=monitoring-private-$AZ1 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=private
+
+
+# ------------------------------------------------------------
+# Monitoring Private Subnet 2
+# ------------------------------------------------------------
+
+export MON_PRIVATE_2_ID=$(aws ec2 create-subnet \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --cidr-block "$MON_PRIVATE_2_CIDR" \
+  --availability-zone "$AZ2" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PRIVATE_2_ID" \
+  --tags \
+    Key=Name,Value=monitoring-private-$AZ2 \
+    Key=Environment,Value=demo \
+    Key=Tier,Value=private
+
+
+echo "Monitoring Subnets Created"
+
+echo "Public 1:"
+echo "$MON_PUBLIC_1_ID"
+
+echo "Public 2:"
+echo "$MON_PUBLIC_2_ID"
+
+echo "Private 1:"
+echo "$MON_PRIVATE_1_ID"
+
+echo "Private 2:"
+echo "$MON_PRIVATE_2_ID"
+
+echo ""
+
+
+# ============================================================
+# TAG PUBLIC SUBNETS FOR INTERNET-FACING LOAD BALANCERS
+# ============================================================
+
+echo "============================================================"
+echo "TAGGING PUBLIC SUBNETS"
+echo "============================================================"
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources \
+    "$APP_PUBLIC_1_ID" \
+    "$APP_PUBLIC_2_ID" \
+    "$MON_PUBLIC_1_ID" \
+    "$MON_PUBLIC_2_ID" \
+  --tags \
+    Key=kubernetes.io/role/elb,Value=1
+
+
+echo "Public subnet tags applied"
+
+echo ""
+
+
+# ============================================================
+# TAG PRIVATE SUBNETS FOR INTERNAL LOAD BALANCERS
+# ============================================================
+
+echo "============================================================"
+echo "TAGGING PRIVATE SUBNETS"
+echo "============================================================"
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources \
+    "$APP_PRIVATE_1_ID" \
+    "$APP_PRIVATE_2_ID" \
+    "$MON_PRIVATE_1_ID" \
+    "$MON_PRIVATE_2_ID" \
+  --tags \
+    Key=kubernetes.io/role/internal-elb,Value=1
+
+
+echo "Private subnet tags applied"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION PUBLIC ROUTE TABLE
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION PUBLIC ROUTE TABLE"
+echo "============================================================"
+
+export APP_PUBLIC_RT_ID=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PUBLIC_RT_ID" \
+  --tags \
+    Key=Name,Value=application-public-route-table
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PUBLIC_RT_ID" \
+  --destination-cidr-block "0.0.0.0/0" \
+  --gateway-id "$APP_IGW_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PUBLIC_1_ID" \
+  --route-table-id "$APP_PUBLIC_RT_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PUBLIC_2_ID" \
+  --route-table-id "$APP_PUBLIC_RT_ID"
+
+
+echo "Application Public Route Table:"
+echo "$APP_PUBLIC_RT_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING PUBLIC ROUTE TABLE
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING PUBLIC ROUTE TABLE"
+echo "============================================================"
+
+export MON_PUBLIC_RT_ID=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PUBLIC_RT_ID" \
+  --tags \
+    Key=Name,Value=monitoring-public-route-table
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PUBLIC_RT_ID" \
+  --destination-cidr-block "0.0.0.0/0" \
+  --gateway-id "$MON_IGW_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PUBLIC_1_ID" \
+  --route-table-id "$MON_PUBLIC_RT_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PUBLIC_2_ID" \
+  --route-table-id "$MON_PUBLIC_RT_ID"
+
+
+echo "Monitoring Public Route Table:"
+echo "$MON_PUBLIC_RT_ID"
+
+echo ""
+
+
+# ============================================================
+# ALLOCATE APPLICATION NAT ELASTIC IP
+# ============================================================
+
+echo "============================================================"
+echo "ALLOCATING APPLICATION NAT ELASTIC IP"
+echo "============================================================"
+
+export APP_NAT_EIP_ALLOC_ID=$(aws ec2 allocate-address \
+  --region "$AWS_REGION" \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+
+echo "Application NAT EIP Allocation ID:"
+echo "$APP_NAT_EIP_ALLOC_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION NAT GATEWAY
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION NAT GATEWAY"
+echo "============================================================"
+
+export APP_NAT_GW_ID=$(aws ec2 create-nat-gateway \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PUBLIC_1_ID" \
+  --allocation-id "$APP_NAT_EIP_ALLOC_ID" \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_NAT_GW_ID" \
+  --tags \
+    Key=Name,Value=application-nat-gateway
+
+
+echo "Application NAT Gateway:"
+echo "$APP_NAT_GW_ID"
+
+
+echo "Waiting for Application NAT Gateway..."
+
+aws ec2 wait nat-gateway-available \
+  --region "$AWS_REGION" \
+  --nat-gateway-ids "$APP_NAT_GW_ID"
+
+
+echo "Application NAT Gateway Available"
+
+echo ""
+
+
+# ============================================================
+# ALLOCATE MONITORING NAT ELASTIC IP
+# ============================================================
+
+echo "============================================================"
+echo "ALLOCATING MONITORING NAT ELASTIC IP"
+echo "============================================================"
+
+export MON_NAT_EIP_ALLOC_ID=$(aws ec2 allocate-address \
+  --region "$AWS_REGION" \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+
+echo "Monitoring NAT EIP Allocation ID:"
+echo "$MON_NAT_EIP_ALLOC_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING NAT GATEWAY
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING NAT GATEWAY"
+echo "============================================================"
+
+export MON_NAT_GW_ID=$(aws ec2 create-nat-gateway \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PUBLIC_1_ID" \
+  --allocation-id "$MON_NAT_EIP_ALLOC_ID" \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_NAT_GW_ID" \
+  --tags \
+    Key=Name,Value=monitoring-nat-gateway
+
+
+echo "Monitoring NAT Gateway:"
+echo "$MON_NAT_GW_ID"
+
+
+echo "Waiting for Monitoring NAT Gateway..."
+
+aws ec2 wait nat-gateway-available \
+  --region "$AWS_REGION" \
+  --nat-gateway-ids "$MON_NAT_GW_ID"
+
+
+echo "Monitoring NAT Gateway Available"
+
+echo ""
+
+
+# ============================================================
+# CREATE APPLICATION PRIVATE ROUTE TABLE
+# ============================================================
+
+echo "============================================================"
+echo "CREATING APPLICATION PRIVATE ROUTE TABLE"
+echo "============================================================"
+
+export APP_PRIVATE_RT_ID=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$APP_PRIVATE_RT_ID" \
+  --tags \
+    Key=Name,Value=application-private-route-table
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT_ID" \
+  --destination-cidr-block "0.0.0.0/0" \
+  --nat-gateway-id "$APP_NAT_GW_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PRIVATE_1_ID" \
+  --route-table-id "$APP_PRIVATE_RT_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$APP_PRIVATE_2_ID" \
+  --route-table-id "$APP_PRIVATE_RT_ID"
+
+
+echo "Application Private Route Table:"
+echo "$APP_PRIVATE_RT_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE MONITORING PRIVATE ROUTE TABLE
+# ============================================================
+
+echo "============================================================"
+echo "CREATING MONITORING PRIVATE ROUTE TABLE"
+echo "============================================================"
+
+export MON_PRIVATE_RT_ID=$(aws ec2 create-route-table \
+  --region "$AWS_REGION" \
+  --vpc-id "$MON_VPC_ID" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$MON_PRIVATE_RT_ID" \
+  --tags \
+    Key=Name,Value=monitoring-private-route-table
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT_ID" \
+  --destination-cidr-block "0.0.0.0/0" \
+  --nat-gateway-id "$MON_NAT_GW_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PRIVATE_1_ID" \
+  --route-table-id "$MON_PRIVATE_RT_ID"
+
+
+aws ec2 associate-route-table \
+  --region "$AWS_REGION" \
+  --subnet-id "$MON_PRIVATE_2_ID" \
+  --route-table-id "$MON_PRIVATE_RT_ID"
+
+
+echo "Monitoring Private Route Table:"
+echo "$MON_PRIVATE_RT_ID"
+
+echo ""
+
+
+# ============================================================
+# CREATE VPC PEERING CONNECTION
+# ============================================================
+
+echo "============================================================"
+echo "CREATING VPC PEERING"
+echo "============================================================"
+
+export PEERING_ID=$(aws ec2 create-vpc-peering-connection \
+  --region "$AWS_REGION" \
+  --vpc-id "$APP_VPC_ID" \
+  --peer-vpc-id "$MON_VPC_ID" \
+  --query 'VpcPeeringConnection.VpcPeeringConnectionId' \
+  --output text)
+
+
+echo "VPC Peering ID:"
+echo "$PEERING_ID"
+
+
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$PEERING_ID" \
+  --tags \
+    Key=Name,Value=application-to-monitoring-peering \
+    Key=Environment,Value=demo
+
+
+echo "Accepting VPC Peering Connection..."
+
+aws ec2 accept-vpc-peering-connection \
+  --region "$AWS_REGION" \
+  --vpc-peering-connection-id "$PEERING_ID" \
+  >/dev/null
+
+
+echo "Waiting for VPC Peering to become active..."
+
+aws ec2 wait vpc-peering-connection-exists \
+  --region "$AWS_REGION" \
+  --vpc-peering-connection-ids "$PEERING_ID"
+
+
+echo "VPC Peering Created"
+
+echo ""
+
+
+# ============================================================
+# ENABLE DNS RESOLUTION OVER VPC PEERING
+# ============================================================
+
+echo "============================================================"
+echo "ENABLING DNS RESOLUTION OVER VPC PEERING"
+echo "============================================================"
+
+
+aws ec2 modify-vpc-peering-connection-options \
+  --region "$AWS_REGION" \
+  --vpc-peering-connection-id "$PEERING_ID" \
+  --requester-peering-connection-options \
+    AllowDnsResolutionFromRemoteVpc=true
+
+
+aws ec2 modify-vpc-peering-connection-options \
+  --region "$AWS_REGION" \
+  --vpc-peering-connection-id "$PEERING_ID" \
+  --accepter-peering-connection-options \
+    AllowDnsResolutionFromRemoteVpc=true
+
+
+echo "DNS Resolution Enabled"
+
+echo ""
+
+
+# ============================================================
+# ADD VPC PEERING ROUTES
+# ============================================================
+
+echo "============================================================"
+echo "ADDING VPC PEERING ROUTES"
+echo "============================================================"
+
+
+# Application VPC -> Monitoring VPC
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PRIVATE_RT_ID" \
+  --destination-cidr-block "$MON_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$APP_PUBLIC_RT_ID" \
+  --destination-cidr-block "$MON_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+# Monitoring VPC -> Application VPC
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PRIVATE_RT_ID" \
+  --destination-cidr-block "$APP_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+aws ec2 create-route \
+  --region "$AWS_REGION" \
+  --route-table-id "$MON_PUBLIC_RT_ID" \
+  --destination-cidr-block "$APP_VPC_CIDR" \
+  --vpc-peering-connection-id "$PEERING_ID"
+
+
+echo "VPC Peering Routes Added"
+
+echo ""
+
+
+# ============================================================
+# CREATE NETWORK OUTPUT FILE
+# ============================================================
+
+echo "============================================================"
+echo "CREATING NETWORK OUTPUT FILE"
+echo "============================================================"
+
+
+cat > network-output.env << EOF
+
+AWS_REGION=$AWS_REGION
+
+APP_VPC_ID=$APP_VPC_ID
+APP_VPC_CIDR=$APP_VPC_CIDR
+
+MON_VPC_ID=$MON_VPC_ID
+MON_VPC_CIDR=$MON_VPC_CIDR
+
+AZ1=$AZ1
+AZ2=$AZ2
+
+APP_IGW_ID=$APP_IGW_ID
+MON_IGW_ID=$MON_IGW_ID
+
+APP_PUBLIC_1_ID=$APP_PUBLIC_1_ID
+APP_PUBLIC_2_ID=$APP_PUBLIC_2_ID
+APP_PRIVATE_1_ID=$APP_PRIVATE_1_ID
+APP_PRIVATE_2_ID=$APP_PRIVATE_2_ID
+MON_PUBLIC_1_ID=$MON_PUBLIC_1_ID
+MON_PUBLIC_2_ID=$MON_PUBLIC_2_ID
+MON_PRIVATE_1_ID=$MON_PRIVATE_1_ID
+MON_PRIVATE_2_ID=$MON_PRIVATE_2_ID
+APP_PUBLIC_RT_ID=$APP_PUBLIC_RT_ID
+APP_PRIVATE_RT_ID=$APP_PRIVATE_RT_ID
+MON_PUBLIC_RT_ID=$MON_PUBLIC_RT_ID
+MON_PRIVATE_RT_ID=$MON_PRIVATE_RT_ID
+APP_NAT_GW_ID=$APP_NAT_GW_ID
+MON_NAT_GW_ID=$MON_NAT_GW_ID
+APP_NAT_EIP_ALLOC_ID=$APP_NAT_EIP_ALLOC_ID
+MON_NAT_EIP_ALLOC_ID=$MON_NAT_EIP_ALLOC_ID
+PEERING_ID=$PEERING_ID
+APP_CLUSTER_NAME=$APP_CLUSTER_NAME
+MON_CLUSTER_NAME=$MON_CLUSTER_NAME
+EOF
+echo "network-output.env created successfully"
+echo ""
+# ============================================================
+# FINAL SUMMARY
+# ============================================================
+echo "============================================================"
+echo "NETWORK SETUP COMPLETED SUCCESSFULLY"
+echo "============================================================"
+echo ""
+echo "AWS REGION:"
+echo "$AWS_REGION"
+echo ""
+echo "------------------------------------------------------------"
+echo "APPLICATION VPC"
+echo "------------------------------------------------------------"
+echo "VPC:"
+echo "$APP_VPC_ID"
+echo "CIDR:"
+echo "$APP_VPC_CIDR"
+echo ""
+echo "Public Subnet 1:"
+echo "$APP_PUBLIC_1_ID"
+echo "Public Subnet 2:"
+echo "$APP_PUBLIC_2_ID"
+echo ""
+echo "Private Subnet 1:"
+echo "$APP_PRIVATE_1_ID"
+echo "Private Subnet 2:"
+echo "$APP_PRIVATE_2_ID"
+echo ""
+echo "NAT Gateway:"
+echo "$APP_NAT_GW_ID"
+echo ""
+echo "------------------------------------------------------------"
+echo "MONITORING VPC"
+echo "------------------------------------------------------------"
+echo "VPC:"
+echo "$MON_VPC_ID"
+echo "CIDR:"
+echo "$MON_VPC_CIDR"
+echo ""
+echo "Public Subnet 1:"
+echo "$MON_PUBLIC_1_ID"
+echo "Public Subnet 2:"
+echo "$MON_PUBLIC_2_ID"
+echo ""
+echo "Private Subnet 1:"
+echo "$MON_PRIVATE_1_ID"
+echo "Private Subnet 2:"
+echo "$MON_PRIVATE_2_ID"
+echo ""
+echo "NAT Gateway:"
+echo "$MON_NAT_GW_ID"
+echo ""
+echo "------------------------------------------------------------"
+echo "VPC PEERING"
+echo "------------------------------------------------------------"
+echo "Peering ID:"
+echo "$PEERING_ID"
+echo ""
+echo "Application VPC:"
+echo "$APP_VPC_CIDR"
+echo "Monitoring VPC:"
+echo "$MON_VPC_CIDR"
+echo ""
+echo "------------------------------------------------------------"
+echo "SUBNET TAGGING"
+echo "------------------------------------------------------------"
+echo ""
+echo "Public Subnets:"
+echo "kubernetes.io/role/elb = 1"
+echo ""
+echo "Private Subnets:"
+echo "kubernetes.io/role/internal-elb = 1"
+echo ""
+echo "============================================================"
+echo "NEXT STEP"
+echo "============================================================"
+echo ""
+echo "Create Application EKS using:"
+echo "application-eks"
+echo ""
+echo "Create Monitoring EKS using:"
+echo "monitoring-eks"
+echo ""
+echo "============================================================"
+
+
+chmod +x networksetup.sh
+sh networksetup.sh
+
+STEP 1  Network                         ✅ DONE
+   |
+STEP 2  Application EKS                 ← NOW
+   |
+STEP 3  Monitoring EKS
+   |
+STEP 4  AWS Load Balancer Controller
+   |
+STEP 5  S3 + IAM for prometheus,thanos and tempo
+   |
+STEP 6  Prometheus HA
+   |
+STEP 7  Thanos
+   |
+STEP 8  Loki
+   |
+STEP 9  Tempo
+   |
+STEP 10 Alloy
+   |
+STEP 11 Grafana
+   |
+STEP 12 Application deployment and End-to-End Validation
