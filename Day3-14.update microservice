@@ -1,0 +1,1023 @@
+from flask import Flask, jsonify
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST
+)
+
+import random
+import time
+import logging
+import sys
+
+
+# ============================================================
+# OPEN TELEMETRY IMPORTS
+# ============================================================
+
+from opentelemetry import trace
+
+from opentelemetry.sdk.resources import Resource
+
+from opentelemetry.sdk.trace import TracerProvider
+
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    OTLPSpanExporter
+)
+
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+
+
+# ============================================================
+# APPLICATION
+# ============================================================
+
+app = Flask(__name__)
+
+
+# ============================================================
+# APPLICATION LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
+
+logger = logging.getLogger("easytrade-demo-service")
+
+
+# ============================================================
+# OPEN TELEMETRY CONFIGURATION
+# ============================================================
+
+SERVICE_NAME = "easytrade-demo-service"
+
+ALLOY_OTLP_ENDPOINT = (
+    "http://alloy.alloy.svc.cluster.local:4318/v1/traces"
+)
+
+
+# ============================================================
+# OPEN TELEMETRY RESOURCE
+# ============================================================
+
+resource = Resource.create({
+
+    "service.name": SERVICE_NAME,
+
+    "service.namespace": "easytrade",
+
+    "service.version": "1.0.0",
+
+    "deployment.environment": "demo"
+
+})
+
+
+# ============================================================
+# TRACE PROVIDER
+# ============================================================
+
+trace_provider = TracerProvider(
+    resource=resource
+)
+
+trace.set_tracer_provider(
+    trace_provider
+)
+
+
+# ============================================================
+# OTLP EXPORTER
+# ============================================================
+
+otlp_exporter = OTLPSpanExporter(
+    endpoint=ALLOY_OTLP_ENDPOINT
+)
+
+
+# ============================================================
+# SPAN PROCESSOR
+# ============================================================
+
+span_processor = BatchSpanProcessor(
+    otlp_exporter
+)
+
+trace_provider.add_span_processor(
+    span_processor
+)
+
+
+# ============================================================
+# TRACER
+# ============================================================
+
+tracer = trace.get_tracer(
+    SERVICE_NAME
+)
+
+
+# ============================================================
+# ENABLE AUTOMATIC FLASK TRACING
+# ============================================================
+
+FlaskInstrumentor().instrument_app(
+    app
+)
+
+
+# ============================================================
+# PROMETHEUS METRICS
+# ============================================================
+
+REQUEST_COUNT = Counter(
+    "easytrade_demo_http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"]
+)
+
+
+REQUEST_DURATION = Histogram(
+    "easytrade_demo_http_request_duration_seconds",
+    "HTTP request duration",
+    ["endpoint"]
+)
+
+
+ORDERS_TOTAL = Counter(
+    "easytrade_demo_orders_total",
+    "Total demo orders processed"
+)
+
+
+ACTIVE_USERS = Gauge(
+    "easytrade_demo_active_users",
+    "Current simulated active users"
+)
+
+
+# ============================================================
+# APPLICATION ENDPOINT
+# ============================================================
+
+@app.route("/api/demo")
+def demo():
+
+    logger.info(
+        "Demo API request received"
+    )
+
+
+    start_time = time.time()
+
+
+    # ========================================================
+    # CREATE CUSTOM APPLICATION SPAN
+    # ========================================================
+
+    with tracer.start_as_current_span(
+        "easytrade.demo.processing"
+    ) as span:
+
+
+        # Simulate application processing
+
+        processing_time = random.uniform(
+            0.1,
+            0.8
+        )
+
+        time.sleep(
+            processing_time
+        )
+
+
+        # Generate demo metrics
+
+        ORDERS_TOTAL.inc()
+
+
+        active_users = random.randint(
+            5,
+            50
+        )
+
+        ACTIVE_USERS.set(
+            active_users
+        )
+
+
+        duration = (
+            time.time()
+            - start_time
+        )
+
+
+        # ====================================================
+        # PROMETHEUS METRICS
+        # ====================================================
+
+        REQUEST_COUNT.labels(
+            method="GET",
+            endpoint="/api/demo",
+            status="200"
+        ).inc()
+
+
+        REQUEST_DURATION.labels(
+            endpoint="/api/demo"
+        ).observe(
+            duration
+        )
+
+
+        # ====================================================
+        # TRACE ATTRIBUTES
+        # ====================================================
+
+        span.set_attribute(
+            "easytrade.processing_time_seconds",
+            duration
+        )
+
+
+        span.set_attribute(
+            "easytrade.active_users",
+            active_users
+        )
+
+
+        span.set_attribute(
+            "easytrade.orders_processed",
+            1
+        )
+
+
+        # ====================================================
+        # APPLICATION LOGGING
+        # ====================================================
+
+        logger.info(
+            "Demo API request completed | "
+            f"processing_time={round(duration, 3)}s | "
+            f"active_users={active_users}"
+        )
+
+
+    return jsonify({
+
+        "status": "success",
+
+        "message":
+            "EasyTrade Demo Service is working",
+
+        "processing_time_seconds":
+            round(duration, 3),
+
+        "active_users":
+            active_users
+
+    })
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health")
+def health():
+
+    logger.info(
+        "Health check requested"
+    )
+
+    return jsonify({
+
+        "status": "healthy"
+
+    })
+
+
+# ============================================================
+# PROMETHEUS METRICS
+# ============================================================
+
+@app.route("/metrics")
+def metrics():
+
+    return generate_latest(), 200, {
+
+        "Content-Type":
+            CONTENT_TYPE_LATEST
+
+    }
+
+
+# ============================================================
+# APPLICATION STARTUP
+# ============================================================
+
+if __name__ == "__main__":
+
+    logger.info(
+        "Starting EasyTrade Demo Service"
+    )
+
+    logger.info(
+        f"Service Name: {SERVICE_NAME}"
+    )
+
+    logger.info(
+        f"OTLP Endpoint: {ALLOY_OTLP_ENDPOINT}"
+    )
+
+
+    app.run(
+
+        host="0.0.0.0",
+
+        port=8080
+
+    )
+
+
+
+
+ vi requirements.txt
+ ====================
+Flask
+prometheus_client
+gunicorn
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-instrumentation-flask
+
+
+vi Dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+EXPOSE 8080
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
+
+
+docker build -t devpipeline/easytrade:demo-V2 .
+
+ docker run   -p 8082:8080   devpipeline/easytrade:demo-V2
+
+ Test below commands in another shell
+ ====================================
+ [ec2-user@ip-172-31-14-192 ~]$ curl http://localhost:8082/health
+{"status":"healthy"}
+[ec2-user@ip-172-31-14-192 ~]$ curl http://localhost:8082/api/demo
+{"active_users":25,"message":"EasyTrade Demo Service is working","processing_time_seconds":0.459,"status":"success"}
+[ec2-user@ip-172-31-14-192 ~]$
+
+
+jump to application cluster and updated easytrade-demo.yaml
+============================================================
+
+$ cat easytrade-demo-update.yaml
+
+
+
+kubectl apply -f easytrade-demo-update.yaml
+
+kubectl rollout status \
+deployment/easytrade-demo-service \
+-n easytrade
+
+Update alloy-values.yaml
+========================
+alloy:
+  configMap:
+    content: |
+      // =====================================================
+      // LOGGING
+      // =====================================================
+
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+
+      // =====================================================
+      // REMOTE WRITE TO MIMIR
+      // =====================================================
+
+      prometheus.remote_write "mimir" {
+
+        endpoint {
+
+          url = "http://a07863aa9fa2c4493908a2e73385b324-08f7b7c07fb930fb.elb.ap-south-1.amazonaws.com/api/v1/push"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // DISCOVER KUBERNETES NODES
+      // =====================================================
+
+      discovery.kubernetes "nodes" {
+
+        role = "node"
+
+      }
+
+
+      // =====================================================
+      // KUBELET METRICS
+      // =====================================================
+
+      discovery.relabel "kubelet" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "kubelet" {
+
+        targets = discovery.relabel.kubelet.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // CADVISOR METRICS
+      // =====================================================
+
+      discovery.relabel "cadvisor" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics/cadvisor"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "cadvisor" {
+
+        targets = discovery.relabel.cadvisor.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // KUBE-STATE-METRICS
+      // =====================================================
+
+      prometheus.scrape "kube_state_metrics" {
+
+        targets = [
+          {
+            "__address__" = "kube-state-metrics.kube-state-metrics.svc.cluster.local:8080",
+            "cluster"     = "application-eks",
+            "job"         = "kube-state-metrics",
+          },
+        ]
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+      }
+
+
+      // =====================================================
+      // EASYTRADE APPLICATION POD DISCOVERY
+      // =====================================================
+
+      discovery.kubernetes "easytrade_pods" {
+
+        role = "pod"
+
+        namespaces {
+          names = ["easytrade"]
+        }
+
+      }
+
+
+      // =====================================================
+      // FILTER ONLY EASYTRADE DEMO SERVICE - METRICS
+      // =====================================================
+
+      discovery.relabel "easytrade_demo_service" {
+
+        targets = discovery.kubernetes.easytrade_pods.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          regex = "easytrade-demo-service"
+
+          action = "keep"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          regex = "8080"
+
+          action = "keep"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_ip",
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          separator = ":"
+
+          regex = "(.+):(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:$2"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          target_label = "pod"
+
+        }
+
+
+        rule {
+
+          target_label = "service"
+
+          replacement = "easytrade-demo-service"
+
+        }
+
+
+        rule {
+
+          target_label = "job"
+
+          replacement = "easytrade-demo-service"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // SCRAPE EASYTRADE APPLICATION METRICS
+      // =====================================================
+
+      prometheus.scrape "easytrade_demo_service" {
+
+        targets =
+          discovery.relabel.easytrade_demo_service.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "15s"
+
+
+        scrape_timeout = "10s"
+
+
+        metrics_path = "/metrics"
+
+      }
+
+
+      // =====================================================
+      // LOKI WRITE
+      // SEND LOGS TO LOKI INTERNAL NLB
+      // =====================================================
+
+      loki.write "loki" {
+
+        endpoint {
+
+          url = "http://k8s-monitori-lokiinge-202c815c28-dd78650a8f1d2cb7.elb.ap-south-1.amazonaws.com:3100/loki/api/v1/push"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // FILTER EASYTRADE DEMO SERVICE LOG PODS
+      // =====================================================
+
+      discovery.relabel "easytrade_demo_logs" {
+
+        targets = discovery.kubernetes.easytrade_pods.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          regex = "easytrade-demo-service"
+
+          action = "keep"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          target_label = "pod"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_container_name",
+          ]
+
+          target_label = "container"
+
+        }
+
+
+        rule {
+
+          target_label = "service"
+
+          replacement = "easytrade-demo-service"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // READ KUBERNETES POD LOGS
+      // =====================================================
+
+      loki.source.kubernetes "easytrade_demo_service" {
+
+        targets =
+          discovery.relabel.easytrade_demo_logs.output
+
+
+        forward_to = [
+          loki.write.loki.receiver,
+        ]
+
+      }
+
+
+      // =====================================================
+      // TRACES - OTLP RECEIVER
+      // RECEIVES HTTP AND GRPC TRACES FROM APPLICATIONS
+      // =====================================================
+
+      otelcol.receiver.otlp "application" {
+
+        grpc {
+
+          endpoint = "0.0.0.0:4317"
+
+        }
+
+
+        http {
+
+          endpoint = "0.0.0.0:4318"
+
+        }
+
+
+        output {
+
+          traces = [
+            otelcol.processor.batch.application.input,
+          ]
+
+        }
+
+      }
+
+
+      // =====================================================
+      // TRACES - BATCH PROCESSOR
+      // =====================================================
+
+      otelcol.processor.batch "application" {
+
+        output {
+
+          traces = [
+            otelcol.exporter.otlp.tempo.input,
+          ]
+
+        }
+
+      }
+
+
+      // =====================================================
+      // TRACES - TEMPO EXPORTER
+      // SEND TRACES TO TEMPO INTERNAL NLB
+      // =====================================================
+
+      otelcol.exporter.otlp "tempo" {
+
+        client {
+
+          endpoint = "k8s-monitori-tempoing-37cdef4391-8192daa8a9201fad.elb.ap-south-1.amazonaws.com:4317"
+
+          tls {
+
+            insecure = true
+
+          }
+
+        }
+
+      }
+
+
+controller:
+  type: deployment
+
+  replicas: 1
+
+
+# =====================================================
+# EXTRA CONTAINER PORTS
+# REQUIRED FOR OTLP RECEIVER
+# =====================================================
+
+extraPorts:
+
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+
+
+rbac:
+  create: true
+
+
+
+helm upgrade alloy \
+  grafana/alloy \
+  -n alloy \
+  -f updated-alloy-values.yaml
+
+
+  Check alloy service, if port 4317 and 4318 not exposed, then run below command
+  kubectl get svc alloy -n alloy
+
+  kubectl patch svc alloy -n alloy --type='json' -p='[
+  {"op":"add","path":"/spec/ports/-","value":{"name":"otlp-grpc","port":4317,"protocol":"TCP","targetPort":4317}},
+  {"op":"add","path":"/spec/ports/-","value":{"name":"otlp-http","port":4318,"protocol":"TCP","targetPort":4318}}
+]'
+
+
+Test it:
+=======
+ kubectl run loki-test \
+  -n easytrade \
+  --image=busybox:1.36 \
+  --restart=Never \
+  --rm \
+  -it \
+  -- sh
+
+
+/ # nc -zv k8s-monitori-lokiinge-202c815c28-dd78650a8f1d2cb7.elb.ap-south-1.amazonaws.com 3100
+k8s-monitori-lokiinge-202c815c28-dd78650a8f1d2cb7.elb.ap-south-1.amazonaws.com (10.20.12.134:3100) open
