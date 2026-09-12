@@ -371,9 +371,11 @@ EXPOSE 8080
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
 
 
-docker build -t devpipeline/easytrade:demo-V2 .
+docker build -t devpipeline/easytrade:v2 .
 
- docker run   -p 8082:8080   devpipeline/easytrade:demo-V2
+ docker push devpipeline/easytrade:v2
+
+ docker run   -p 8082:8080   devpipeline/easytrade:v2
 
  Test below commands in another shell
  ====================================
@@ -1021,3 +1023,8 @@ Test it:
 
 / # nc -zv k8s-monitori-lokiinge-202c815c28-dd78650a8f1d2cb7.elb.ap-south-1.amazonaws.com 3100
 k8s-monitori-lokiinge-202c815c28-dd78650a8f1d2cb7.elb.ap-south-1.amazonaws.com (10.20.12.134:3100) open
+/ # nc -zv k8s-monitori-tempoing-1111339233-1716cc118f8e4214.elb.ap-south-1.amazonaws.com 4317
+k8s-monitori-tempoing-1111339233-1716cc118f8e4214.elb.ap-south-1.amazonaws.com (10.20.11.69:4317) open
+/ # nc -zv k8s-monitori-tempoing-1111339233-1716cc118f8e4214.elb.ap-south-1.amazonaws.com 4318
+k8s-monitori-tempoing-1111339233-1716cc118f8e4214.elb.ap-south-1.amazonaws.com (10.20.11.69:4318) open
+/ #
