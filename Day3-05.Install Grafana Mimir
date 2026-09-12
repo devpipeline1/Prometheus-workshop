@@ -49,7 +49,6 @@ source network-output.env
 
 kubectl config use-context monitoring-eks
 
-kubectl create ns monitoring
 
 export below variables:
 ======================
@@ -58,12 +57,12 @@ export ACCOUNT_ID=$(aws sts get-caller-identity \
   --output text)
 export MIMIR_NAMESPACE=monitoring
 export MIMIR_SERVICE_ACCOUNT=mimir-s3
-export MIMIR_BUCKET=mimir-metrics-$ACCOUNT_ID-ap-south-1
+export MIMIR_BUCKET=mimir-$ACCOUNT_ID-ap-south-1
 
 Verify:
 =======
 ACCOUNT_ID=045667250694
-MIMIR_BUCKET=mimir-metrics-045667250694-ap-south-1
+MIMIR_BUCKET=mimir-045667250694-ap-south-1
 MIMIR_NAMESPACE=monitoring
 
 
@@ -73,122 +72,7 @@ helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 helm search repo grafana/mimir-distributed
 
-Create AWS S3 Bucket:
-====================
-aws s3api create-bucket \
-  --bucket "$MIMIR_BUCKET" \
-  --region "$AWS_REGION" \
-  --create-bucket-configuration \
-  LocationConstraint="$AWS_REGION"
 
-Verify:
-======
-aws s3api head-bucket \
-  --bucket "$MIMIR_BUCKET"
-
-  aws s3 ls | grep "$MIMIR_BUCKET"
-
-Enable Bucket Versioning:
-========================
-aws s3api put-bucket-versioning \
-  --bucket "$MIMIR_BUCKET" \
-  --versioning-configuration Status=Enabled
-
-Verify:
-======
-aws s3api get-bucket-versioning \
-  --bucket "$MIMIR_BUCKET"
-  
-Create IAM Policy for Mimir:
-===========================
-vi mimir-s3-policy.json
-
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket",
-        "s3:GetBucketLocation"
-      ],
-      "Resource": [
-        "arn:aws:s3:::MIMIR_BUCKET_NAME"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::MIMIR_BUCKET_NAME/*"
-      ]
-    }
-  ]
-}
-
-Replace bucket name and verify:
-==============================
-sed -i "s/MIMIR_BUCKET_NAME/$MIMIR_BUCKET/g"   mimir-s3-policy.json
-
-cat mimir-s3-policy.json
-
-Create Mimir IAM Policy:
-=======================
-export MIMIR_POLICY_NAME=MimirS3AccessPolicy
-
-aws iam create-policy \
-  --policy-name "$MIMIR_POLICY_NAME" \
-  --policy-document \
-file://mimir-s3-policy.json
-
-export MIMIR_POLICY_ARN=arn:aws:iam::$ACCOUNT_ID:policy/$MIMIR_POLICY_NAME
-
-Create Mimir IAM ServiceAccount:
-===============================
-AWS IAM
-   │
-   ▼
-MimirS3AccessPolicy
-   │
-   ▼
-AmazonEKSMimirRole
-   │
-   ▼
-ServiceAccount: mimir
-   │
-   ▼
-Grafana Mimir Pods
-
-
-export MON_CLUSTER_NAME=monitoring-eks
-export AWS_REGION=ap-south-1
-export MIMIR_NAMESPACE=monitoring
-export MIMIR_SERVICE_ACCOUNT=mimir-s3
-export AWS_ACCOUNT_ID=045667250694
-export MIMIR_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/MimirS3AccessPolicy"
-export MIMIR_ROLE_NAME=AmazonEKSMimirRole
-
-
-eksctl create iamserviceaccount \
-  --cluster "$MON_CLUSTER_NAME" \
-  --region "$AWS_REGION" \
-  --namespace "$MIMIR_NAMESPACE" \
-  --name "$MIMIR_SERVICE_ACCOUNT" \
-  --role-name "$MIMIR_ROLE_NAME" \
-  --attach-policy-arn "$MIMIR_POLICY_ARN" \
-  --approve \
-  --override-existing-serviceaccounts
-
-
-  Verify Mimir ServiceAccount:
-  ============================
-kubectl get sa mimir-s3 \
-  -n monitoring \
-  -o yaml
 
 
                            APPLICATION EKS
@@ -403,9 +287,6 @@ kafka:
   enabled: false
 
 
-
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo update
 
 helm upgrade --install mimir \
   grafana/mimir-distributed \
