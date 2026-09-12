@@ -68,7 +68,9 @@ $ aws s3api head-bucket \
     "AccessPointAlias": false
 }
 
-
+Jump into monitoring-eks cluster:
+================================
+kubectl config use-context monitoring-eks
 
 $ kubectl get serviceaccount loki-s3 -n monitoring
 NAME      AGE
