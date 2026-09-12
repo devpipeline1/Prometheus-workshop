@@ -1,0 +1,63 @@
+Jump to application cluster:
+kubectl config use-context application-eks
+
+
+Create easytrade nmapespace
+===========================
+kubectl create ns easytrade
+
+Deploy application:
+==================
+helm install easytrade oci://europe-docker.pkg.dev/dynatrace-demoability/helm/easytrade --namespace easytrade
+
+$  kubectl get pods -n easytrade
+NAME                                                   READY   STATUS    RESTARTS   AGE
+easytrade-accountservice-74ddd6c6d9-z8vqt              1/1     Running   0          2m6s
+easytrade-aggregator-service-58d5b9bb99-n7mjs          1/1     Running   0          2m6s
+easytrade-broker-service-87645dd6-m7xjm                1/1     Running   0          2m6s
+easytrade-calculationservice-79f56478b7-brz4x          1/1     Running   0          2m5s
+easytrade-contentcreator-7f46854986-d7cs6              1/1     Running   0          2m4s
+easytrade-credit-card-order-service-7b7d48c584-gbz7w   1/1     Running   0          2m5s
+easytrade-db-0                                         1/1     Running   0          2m6s
+easytrade-engine-7f6bb75c57-zsvk7                      1/1     Running   0          2m6s
+easytrade-feature-flag-service-56889cfdc-pzgxs         1/1     Running   0          2m5s
+easytrade-frontend-d798f9457-rmw8n                     1/1     Running   0          2m5s
+easytrade-frontendreverseproxy-757c649679-chmj5        1/1     Running   0          2m6s
+easytrade-loadgen-68d4fd75f9-dfn69                     1/1     Running   0          2m6s
+easytrade-loginservice-5d99df8865-lplv5                1/1     Running   0          2m6s
+easytrade-manager-5d5f69f849-4b2fv                     1/1     Running   0          2m6s
+easytrade-offerservice-688fcd6f58-cd5qs                1/1     Running   0          2m5s
+easytrade-pricing-service-845d5bbfb5-9vrjv             1/1     Running   0          2m6s
+easytrade-problem-operator-dcc884546-j7htd             1/1     Running   0          2m6s
+easytrade-rabbitmq-7df8cdb7c6-s4rqc                    1/1     Running   0          2m6s
+easytrade-third-party-service-78486bd97f-l7gzf         1/1     Running   0          2m4s
+
+
+$  kubectl get svc -n easytrade
+NAME                                  TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)              AGE
+easytrade-accountservice              ClusterIP   172.20.147.106   <none>        8080/TCP             2m53s
+easytrade-broker-service              ClusterIP   172.20.123.21    <none>        8080/TCP             2m53s
+easytrade-credit-card-order-service   ClusterIP   172.20.16.164    <none>        8080/TCP             2m53s
+easytrade-db                          ClusterIP   172.20.80.81     <none>        1433/TCP             2m53s
+easytrade-engine                      ClusterIP   172.20.112.167   <none>        8080/TCP             2m53s
+easytrade-feature-flag-service        ClusterIP   172.20.190.200   <none>        8080/TCP             2m53s
+easytrade-frontend                    ClusterIP   172.20.45.129    <none>        3000/TCP             2m53s
+easytrade-frontendreverseproxy        ClusterIP   172.20.7.113     <none>        8080/TCP             2m53s
+easytrade-loginservice                ClusterIP   172.20.6.11      <none>        8080/TCP             2m53s
+easytrade-manager                     ClusterIP   172.20.30.52     <none>        8080/TCP             2m53s
+easytrade-offerservice                ClusterIP   172.20.121.13    <none>        8080/TCP             2m53s
+easytrade-pricing-service             ClusterIP   172.20.126.175   <none>        8080/TCP             2m53s
+easytrade-rabbitmq                    ClusterIP   172.20.25.200    <none>        5672/TCP,15672/TCP   2m53s
+easytrade-third-party-service         ClusterIP   172.20.4.49      <none>        8080/TCP             2m53s
+
+kubectl patch svc easytrade-frontendreverseproxy   -n easytrade   -p '{
+    "metadata": {
+      "annotations": {
+        "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
+        "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip"
+      }
+    },
+    "spec": {
+      "type": "LoadBalancer"
+    }
+  }'
