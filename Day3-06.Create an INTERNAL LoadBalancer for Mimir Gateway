@@ -1,0 +1,30 @@
+We need to expose Mimir Gateway internally through a LoadBalancer, then configure Alloy to remote_write to that internal address.
+
+kubectl patch svc mimir-gateway \
+  -n monitoring \
+  -p '{
+    "metadata": {
+      "annotations": {
+        "service.beta.kubernetes.io/aws-load-balancer-type": "nlb",
+        "service.beta.kubernetes.io/aws-load-balancer-scheme": "internal"
+      }
+    },
+    "spec": {
+      "type": "LoadBalancer"
+    }
+  }'
+
+
+$ kubectl get svc -n monitoring | grep mimir-gateway
+mimir-gateway                    LoadBalancer   172.20.200.43    a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com   80:30979/TCP,8080:30122/TCP   5h6m
+
+Alloy
+  ↓
+prometheus.remote_write
+  ↓
+http://INTERNAL-MIMIR-NLB/prometheus/api/v1/push
+
+a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com
+
+so The Alloy remote_write endpoint will be:
+http://INTERNAL-MIMIR-NLB/prometheus/api/v1/push
