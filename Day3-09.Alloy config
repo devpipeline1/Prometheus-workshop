@@ -1,0 +1,801 @@
+First verify network connectivity to Mimir from application cluster:
+==================================================================
+
+$ kubectl run network-test \
+  --image=curlimages/curl \
+  --rm \
+  -it \
+  --restart=Never \
+  -- \
+  curl -v \
+  http://a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com/prometheus/api/v1/status/buildinfo
+
+  
+
+
+Add Grafana Helm repository:
+===========================
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+kubectl create namespace alloy
+
+vi alloy-values.yaml
+
+alloy:
+
+  configMap:
+
+    content: |
+
+      // =====================================================
+      // LOGGING
+      // =====================================================
+
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+
+      // =====================================================
+      // REMOTE WRITE TO MIMIR
+      // =====================================================
+
+      prometheus.remote_write "mimir" {
+
+        endpoint {
+
+          url = "http://a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com/api/v1/push"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // DISCOVER KUBERNETES NODES
+      // =====================================================
+
+      discovery.kubernetes "nodes" {
+
+        role = "node"
+
+      }
+
+
+      // =====================================================
+      // KUBELET METRICS
+      //
+      // Collect:
+      //
+      // kubelet runtime metrics
+      // node capacity
+      // pod information
+      // =====================================================
+
+      discovery.relabel "kubelet" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        // -------------------------------------------------
+        // USE NODE INTERNAL IP + KUBELET PORT
+        // -------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        // -------------------------------------------------
+        // KUBELET METRICS PATH
+        // -------------------------------------------------
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics"
+
+        }
+
+
+        // -------------------------------------------------
+        // CLUSTER LABEL
+        // -------------------------------------------------
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        // -------------------------------------------------
+        // NODE LABEL
+        // -------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "kubelet" {
+
+        targets = discovery.relabel.kubelet.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+      }
+
+
+      // =====================================================
+      // CADVISOR CONTAINER METRICS
+      //
+      // Collect:
+      //
+      // container_cpu_usage_seconds_total
+      // container_memory_working_set_bytes
+      // container_network_receive_bytes_total
+      // container_network_transmit_bytes_total
+      //
+      // =====================================================
+
+      discovery.relabel "cadvisor" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        // -------------------------------------------------
+        // USE NODE INTERNAL IP + KUBELET PORT
+        // -------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        // -------------------------------------------------
+        // CADVISOR METRICS PATH
+        // -------------------------------------------------
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics/cadvisor"
+
+        }
+
+
+        // -------------------------------------------------
+        // CLUSTER LABEL
+        // -------------------------------------------------
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        // -------------------------------------------------
+        // NODE LABEL
+        // -------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "cadvisor" {
+
+        targets = discovery.relabel.cadvisor.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+      }
+
+controller:
+  type: deployment
+  replicas: 1
+rbac:
+  create: true
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+
+
+Install ALloy:
+==============
+helm upgrade --install alloy \
+  grafana/alloy \
+  --namespace alloy \
+  --values alloy-values.yaml
+
+Verify:
+======
+$ kubectl get pods   -n alloy
+NAME          READY   STATUS    RESTARTS   AGE
+alloy-mlfhr   2/2     Running   0          43s
+alloy-tkgpg   1/2     Running   0          7s
+
+
+check logs:
+kubectl logs \
+  -n alloy \
+  -l app.kubernetes.io/name=alloy \
+  -c alloy \
+  --tail=100
+
+kubectl logs \
+  -n alloy \
+  -l app.kubernetes.io/name=alloy \
+  -c alloy \
+  --tail=200 | grep -iE "error|failed|out-of-order|400"
+
+  
+Query Mimir directly:
+export MIMIR_GATEWAY="http://a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com"
+
+check whether Mimir has metric names:
+curl -s "$MIMIR_GATEWAY/prometheus/api/v1/label/__name__/values"
+
+output:
+{
+  "status": "success",
+  "data": [
+    "up",
+    "process_cpu_seconds_total"
+  ]
+}
+
+
+
+curl -s \
+  "$MIMIR_GATEWAY/prometheus/api/v1/query?query=up"
+
+
+curl -s \
+  "$MIMIR_GATEWAY/prometheus/api/v1/query?query=count(up)"
+
+curl -s \
+  "$MIMIR_GATEWAY/prometheus/api/v1/query?query=count%20by%20(job)(up)"
+
+curl -s \
+  "$MIMIR_GATEWAY/prometheus/api/v1/query?query=count%20by%20(namespace)(up)"
+
+
+Get an Alloy pod:
+
+export ALLOY_POD=$(kubectl get pods \
+  -n alloy \
+  -l app.kubernetes.io/name=alloy \
+  -o jsonpath='{.items[0].metadata.name}')
+
+echo $ALLOY_POD
+
+Port forward:
+  kubectl port-forward \
+  -n alloy \
+  $ALLOY_POD \
+  12345:12345
+
+
+Open another Git Bash terminal.
+Check Alloy metrics:
+
+curl -s http://localhost:12345/metrics | \
+grep prometheus_remote_storage
+
+curl -s http://localhost:12345/metrics | \
+grep -i remote_write
+
+
+
+so far, we capture
+Phase 1 — Infrastructure Metrics
+ Alloy installed
+ Mimir remote_write working
+ Kubernetes node discovery
+ Kubelet metrics
+ cAdvisor metrics
+
+Next we will go with kubestate metrics
+======================================
+Phase 2 — Kubernetes Metrics
+ kube-state-metrics
+ Node exporter
+ Deployment metrics
+ Pod metrics
+ Namespace metrics
+
+install kube-state-metrics and configure Alloy to scrape it and send the metrics to Mimir:
+==========================================================================================
+                      APPLICATION EKS
+
+                           │
+                           │
+                 ┌─────────▼──────────┐
+                 │ kube-state-metrics │
+                 │                    │
+                 │ Kubernetes API     │
+                 │ → Pod Metrics      │
+                 │ → Deployment       │
+                 │ → StatefulSet      │
+                 │ → Node             │
+                 │ → Namespace        │
+                 └─────────┬──────────┘
+                           │
+                        /metrics
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │    Alloy    │
+                    │             │
+                    │ Prometheus  │
+                    │   Scrape    │
+                    └──────┬──────┘
+                           │
+                      Remote Write
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │    Mimir    │
+                    └──────┬──────┘
+                           │
+                           ▼
+                        Grafana
+
+
+helm repo add prometheus-community \
+https://prometheus-community.github.io/helm-charts
+
+kubectl create namespace kube-state-metrics
+
+helm upgrade --install kube-state-metrics \
+prometheus-community/kube-state-metrics \
+-n kube-state-metrics \
+--set prometheus.monitor.enabled=false
+
+
+$ kubectl get pods -n kube-state-metrics
+NAME                                  READY   STATUS    RESTARTS   AGE
+kube-state-metrics-85f4594546-r52n2   1/1     Running   0          29s
+
+
+$ kubectl get svc -n kube-state-metrics
+NAME                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+kube-state-metrics   ClusterIP   172.20.83.64   <none>        8080/TCP   50s
+
+Test Metrics Manually:
+=====================
+
+kubectl run ksm-test \
+-n kube-state-metrics \
+--rm \
+-it \
+--restart=Never \
+--image=curlimages/curl \
+-- \
+sh -c '
+curl -s http://kube-state-metrics.kube-state-metrics.svc.cluster.local:8080/metrics |
+grep -E "^kube_(pod_info|pod_status_phase|deployment_status_replicas|node_info)" |
+head -20
+'
+
+
+output:
+=======
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-loadgen"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-aggregator-service"} 1
+kube_deployment_status_replicas{namespace="kube-system",deployment="coredns"} 2
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-offerservice"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-calculationservice"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-third-party-service"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-engine"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-loginservice"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-frontend"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-contentcreator"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-rabbitmq"} 1
+kube_deployment_status_replicas{namespace="kube-system",deployment="ebs-csi-controller"} 2
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-pricing-service"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-accountservice"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-frontendreverseproxy"} 1
+kube_deployment_status_replicas{namespace="kube-state-metrics",deployment="kube-state-metrics"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-credit-card-order-service"} 1
+kube_deployment_status_replicas{namespace="kube-system",deployment="aws-load-balancer-controller"} 2
+kube_deployment_status_replicas{namespace="alloy",deployment="alloy"} 1
+kube_deployment_status_replicas{namespace="easytrade",deployment="easytrade-problem-operator"} 1
+pod "ksm-test" deleted from kube-state-metrics namespace
+
+Add this kube state metrics AFTER your existing cAdvisor scrape section:
+=======================================================================
+updated alloy-values.yaml
+
+$ cat alloy-values.yaml
+alloy:
+  configMap:
+    content: |
+      // =====================================================
+      // LOGGING
+      // =====================================================
+
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+
+      // =====================================================
+      // REMOTE WRITE TO MIMIR
+      // =====================================================
+
+      prometheus.remote_write "mimir" {
+
+        endpoint {
+
+          url = "http://a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com/api/v1/push"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // DISCOVER KUBERNETES NODES
+      // =====================================================
+
+      discovery.kubernetes "nodes" {
+
+        role = "node"
+
+      }
+
+
+      // =====================================================
+      // KUBELET METRICS
+      // =====================================================
+
+      discovery.relabel "kubelet" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "kubelet" {
+
+        targets = discovery.relabel.kubelet.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // CADVISOR METRICS
+      // =====================================================
+
+      discovery.relabel "cadvisor" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics/cadvisor"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "cadvisor" {
+
+        targets = discovery.relabel.cadvisor.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // KUBE-STATE-METRICS
+      // =====================================================
+
+      prometheus.scrape "kube_state_metrics" {
+
+        targets = [
+          {
+            "__address__" = "kube-state-metrics.kube-state-metrics.svc.cluster.local:8080",
+            "cluster"     = "application-eks",
+            "job"         = "kube-state-metrics",
+          },
+        ]
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+      }
+
+
+controller:
+  type: deployment
+
+  replicas: 1
+
+
+rbac:
+  create: true
+
+
+helm upgrade alloy \
+  grafana/alloy \
+  -n alloy \
+  -f alloy-values.yaml
+
+
+kubectl get pods -n alloy
+
+
+kubectl logs \
+  -n alloy \
+  deployment/alloy \
+  -c alloy \
+  --tail=200 | \
+grep -iE "error|failed|forbidden|unauthorized|timeout"
+
+
+Verify in Mimir-grafana:
+up{job="kube-state-metrics"}
+
+Check Kubernetes pods:
+=====================
+count(kube_pod_info)
+
+Check EasyTrade pods counts specifically:
+========================================
+count(kube_pod_info{namespace="easytrade"})
+
+Deployments count:
+=================
+count(kube_deployment_status_replicas)
+
+Check nodes:
+==========
+count(kube_node_info)
+
+
+
+kubectl patch svc easytrade-frontendreverseproxy   -n easytrade   -p '{
+    "metadata": {
+      "annotations": {
+        "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
+        "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip"
+      }
+    },
+    "spec": {
+      "type": "LoadBalancer"
+    }
+  }'
