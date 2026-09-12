@@ -22,9 +22,9 @@ Alloy
   ↓
 prometheus.remote_write
   ↓
-http://INTERNAL-MIMIR-NLB/prometheus/api/v1/push
+http://INTERNAL-MIMIR-NLB/api/v1/push
 
 a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com
 
 so The Alloy remote_write endpoint will be:
-http://INTERNAL-MIMIR-NLB/prometheus/api/v1/push
+http://INTERNAL-MIMIR-NLB/api/v1/push
