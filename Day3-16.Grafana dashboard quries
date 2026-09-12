@@ -1,0 +1,240 @@
+1️⃣ EasyTrade Application Dashboard
+
+Your application metrics are scraped from:
+
+easytrade-demo-service
+
+With labels like:
+
+cluster="application-eks"
+namespace="easytrade"
+service="easytrade-demo-service"
+job="easytrade-demo-service"
+First: Find available EasyTrade metrics
+
+In Grafana → Explore → Mimir datasource, run:
+
+
+
+This will show the actual metrics exposed by your application.
+
+Recommended Application Dashboard Panels
+1. Application Up Status
+up{
+  job="easytrade-demo-service"
+}
+
+Visualization:
+
+Stat
+
+Expected:
+
+1 = UP 🟢
+0 = DOWN 🔴
+
+
+{job="easytrade-demo-service"}
+
+Or to see metric names:
+
+count by (__name__) (
+  {job="easytrade-demo-service"}
+)
+
+
+2. Application Target Count
+count(
+  up{
+    job="easytrade-demo-service"
+  }
+)
+
+Shows how many application pods Alloy is scraping.
+
+Visualization:
+
+Stat
+3. Request Rate
+
+If your application exposes:
+
+http_requests_total
+
+Use:
+
+sum(
+  rate(http_requests_total{
+    job="easytrade-demo-service"
+  }[5m])
+)
+
+Visualization:
+
+Time series
+4. Requests Per Second by Pod
+sum by (pod) (
+  rate(http_requests_total{
+    job="easytrade-demo-service"
+  }[5m])
+)
+
+Useful for checking traffic distribution.
+
+5. HTTP Error Rate
+
+If your application has HTTP status labels:
+
+sum(
+  rate(http_requests_total{
+    job="easytrade-demo-service",
+    status=~"5.."
+  }[5m])
+)
+6. HTTP Success Rate
+sum(
+  rate(http_requests_total{
+    job="easytrade-demo-service",
+    status=~"2.."
+  }[5m])
+)
+7. Application Metrics Availability
+count by (__name__) (
+  {job="easytrade-demo-service"}
+)
+
+This is useful initially to understand exactly what metrics your application exposes.
+
+2️⃣ Kubernetes Cluster Dashboard
+
+This will be one of the most important dashboards for your observability demo.
+
+Your cluster label is:
+
+cluster="application-eks"
+🖥️ NODE METRICS
+1. Number of Nodes
+count(
+  kubelet_node_name{
+    cluster="application-eks"
+  }
+)
+
+
+2. Node CPU Usage
+100 -
+(
+  avg by (node) (
+    rate(
+      node_cpu_seconds_total{
+        cluster="application-eks",
+        mode="idle"
+      }[5m]
+    )
+  ) * 100
+)
+
+
+3. Node memory Usage
+
+100 *
+(
+  1 -
+  (
+    node_memory_MemAvailable_bytes{
+      cluster="application-eks"
+    }
+    /
+    node_memory_MemTotal_bytes{
+      cluster="application-eks"
+    }
+  )
+)
+
+
+Visualization:
+
+Time series
+📦 POD METRICS
+Running Pods:
+===========
+sum(kubelet_running_pods)          # running pods
+
+Pod CPU Usage
+============
+sum by (namespace, pod) (
+  rate(
+    container_cpu_usage_seconds_total{
+      cluster="application-eks",
+      container!="",
+      image!=""
+    }[5m]
+  )
+)
+10. Top 10 Pods by CPU
+topk(
+  10,
+  sum by (namespace, pod) (
+    rate(
+      container_cpu_usage_seconds_total{
+        cluster="application-eks",
+        container!="",
+        image!=""
+      }[5m]
+    )
+  )
+)
+
+11. Pod Memory Usage
+sum by (namespace, pod) (
+  container_memory_working_set_bytes{
+    cluster="application-eks",
+    container!="",
+    image!=""
+  }
+)
+12. Top 10 Pods by Memory
+topk(
+  10,
+  sum by (namespace, pod) (
+    container_memory_working_set_bytes{
+      cluster="application-eks",
+      container!="",
+      image!=""
+    }
+  )
+)
+🔄 CONTAINER METRICS
+13. Container Restarts
+sum by (namespace, pod, container) (
+  kube_pod_container_status_restarts_total{
+    cluster="application-eks"
+  }
+)
+14. Top Containers by CPU
+topk(
+  10,
+  sum by (namespace, pod, container) (
+    rate(
+      container_cpu_usage_seconds_total{
+        cluster="application-eks",
+        container!="",
+        image!=""
+      }[5m]
+    )
+  )
+)
+15. Top Containers by Memory
+topk(
+  10,
+  sum by (namespace, pod, container) (
+    container_memory_working_set_bytes{
+      cluster="application-eks",
+      container!="",
+      image!=""
+    }
+  )
+)
+🚀 DEPLOYMENT METRICS
+
+These are very useful for your EasyTrade application.
