@@ -36,7 +36,7 @@ grafana.ini:
     root_url: "%(protocol)s://%(domain)s/"
 
   users:
-    allow_sign_up: false
+    allow_sign_up: true
 
   security:
     admin_user: admin
