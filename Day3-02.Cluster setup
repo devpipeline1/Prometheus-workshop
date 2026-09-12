@@ -1,24 +1,24 @@
 
 Note:Replace variables from network-output.env
 
-cat > monitoring-eks.yaml <<EOF
+$ cat monitoring-eks.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
-  name: ${MON_CLUSTER_NAME}
-  region: ${AWS_REGION}
+  name: monitoring-eks
+  region: ap-south-1
   version: "1.36"
 
 vpc:
-  id: ${MON_VPC_ID}
+  id: vpc-0c320ebfadadd8c92
 
   subnets:
     private:
-      ${AZ1}:
-        id: ${MON_PRIVATE_1_ID}
-      ${AZ2}:
-        id: ${MON_PRIVATE_2_ID}
+      ap-south-1a:
+        id: subnet-0bb232b07565c4466
+      ap-south-1b:
+        id: subnet-09ca4a0a6eb4d13e3
 
   clusterEndpoints:
     publicAccess: true
@@ -43,7 +43,6 @@ managedNodeGroups:
       Purpose: observability
 
 addons:
-
   - name: vpc-cni
     resolveConflicts: overwrite
   - name: coredns
@@ -52,7 +51,6 @@ addons:
     resolveConflicts: overwrite
   - name: aws-ebs-csi-driver
     resolveConflicts: overwrite
-EOF
 
 
 eksctl create cluster \
@@ -63,24 +61,24 @@ eksctl create cluster \
 Application cluster
 ===================
 
-cat > application-eks.yaml <<EOF
+$ vi application-eks.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
-  name: ${APP_CLUSTER_NAME}
-  region: ${AWS_REGION}
+  name: application-eks
+  region: ap-south-1
   version: "1.36"
 
 vpc:
-  id: ${APP_VPC_ID}
+  id: vpc-09cfb9e646bccec67
   subnets:
     private:
-      ${AZ1}:
-        id: ${APP_PRIVATE_1_ID}
+      ap-south-1a:
+        id: subnet-0132d5604a53a5fa5
 
-      ${AZ2}:
-        id: ${APP_PRIVATE_2_ID}
+      ap-south-1b:
+        id: subnet-036ebc6c7fda913c9
 
   clusterEndpoints:
     publicAccess: true
@@ -92,9 +90,9 @@ iam:
 managedNodeGroups:
   - name: application-workers
     instanceType: t3.large
-    desiredCapacity: 2
-    minSize: 2
-    maxSize: 4
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 3
     privateNetworking: true
     volumeSize: 50
     labels:
@@ -112,7 +110,7 @@ addons:
     resolveConflicts: overwrite
   - name: aws-ebs-csi-driver
     resolveConflicts: overwrite
-EOF
+
 
 eksctl create cluster \
   -f application-eks.yaml \
