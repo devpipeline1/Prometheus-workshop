@@ -1,0 +1,426 @@
+                     APPLICATION EKS
+
+                       Grafana Alloy
+                            │
+                            │ Prometheus remote_write
+                            │
+                            ▼
+
+                    Internal AWS NLB
+                            │
+                            ▼
+
+┌─────────────────────────────────────────────────────────┐
+│                  MONITORING EKS                         │
+│                                                         │
+│                  Mimir Gateway                          │
+│                       │                                 │
+│                       ▼                                 │
+│               Grafana Mimir                             │
+│                       │                                 │
+│              ┌────────┴─────────┐                       │
+│              │                  │                       │
+│              ▼                  ▼                       │
+│        EBS GP3 PVCs          AWS S3                     │
+│        WAL / local data      Metric blocks              │
+│                                 │                       │
+└─────────────────────────────────┼───────────────────────┘
+                                  │
+                                  ▼
+                           Long-term metrics
+
+
+
+Grafana Mimir Installation Plan:
+
+Step 1   Add Grafana Helm repository
+Step 2   Create AWS S3 bucket
+Step 3   Create IAM policy for Mimir S3 access
+Step 4   Create IAM Role for Mimir
+Step 5   Create Mimir ServiceAccount with IRSA
+Step 6   Create Mimir Helm values
+Step 7   Install Mimir
+Step 8   Verify all pods
+Step 9   Verify Mimir gateway
+Step 10  Create Internal NLB
+Step 11  Test remote_write endpoint
+
+source network-output.env
+
+kubectl config use-context monitoring-eks
+
+kubectl create ns monitoring
+
+export below variables:
+======================
+export ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account \
+  --output text)
+export MIMIR_NAMESPACE=monitoring
+export MIMIR_SERVICE_ACCOUNT=mimir-s3
+export MIMIR_BUCKET=mimir-metrics-$ACCOUNT_ID-ap-south-1
+
+Verify:
+=======
+ACCOUNT_ID=045667250694
+MIMIR_BUCKET=mimir-metrics-045667250694-ap-south-1
+MIMIR_NAMESPACE=monitoring
+
+
+Add Grafana Helm Repository:
+===========================
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+helm search repo grafana/mimir-distributed
+
+Create AWS S3 Bucket:
+====================
+aws s3api create-bucket \
+  --bucket "$MIMIR_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration \
+  LocationConstraint="$AWS_REGION"
+
+Verify:
+======
+aws s3api head-bucket \
+  --bucket "$MIMIR_BUCKET"
+
+  aws s3 ls | grep "$MIMIR_BUCKET"
+
+Enable Bucket Versioning:
+========================
+aws s3api put-bucket-versioning \
+  --bucket "$MIMIR_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+Verify:
+======
+aws s3api get-bucket-versioning \
+  --bucket "$MIMIR_BUCKET"
+  
+Create IAM Policy for Mimir:
+===========================
+vi mimir-s3-policy.json
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::MIMIR_BUCKET_NAME"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::MIMIR_BUCKET_NAME/*"
+      ]
+    }
+  ]
+}
+
+Replace bucket name and verify:
+==============================
+sed -i "s/MIMIR_BUCKET_NAME/$MIMIR_BUCKET/g"   mimir-s3-policy.json
+
+cat mimir-s3-policy.json
+
+Create Mimir IAM Policy:
+=======================
+export MIMIR_POLICY_NAME=MimirS3AccessPolicy
+
+aws iam create-policy \
+  --policy-name "$MIMIR_POLICY_NAME" \
+  --policy-document \
+file://mimir-s3-policy.json
+
+export MIMIR_POLICY_ARN=arn:aws:iam::$ACCOUNT_ID:policy/$MIMIR_POLICY_NAME
+
+Create Mimir IAM ServiceAccount:
+===============================
+AWS IAM
+   │
+   ▼
+MimirS3AccessPolicy
+   │
+   ▼
+AmazonEKSMimirRole
+   │
+   ▼
+ServiceAccount: mimir
+   │
+   ▼
+Grafana Mimir Pods
+
+
+export MON_CLUSTER_NAME=monitoring-eks
+export AWS_REGION=ap-south-1
+export MIMIR_NAMESPACE=monitoring
+export MIMIR_SERVICE_ACCOUNT=mimir-s3
+export AWS_ACCOUNT_ID=045667250694
+export MIMIR_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/MimirS3AccessPolicy"
+export MIMIR_ROLE_NAME=AmazonEKSMimirRole
+
+
+eksctl create iamserviceaccount \
+  --cluster "$MON_CLUSTER_NAME" \
+  --region "$AWS_REGION" \
+  --namespace "$MIMIR_NAMESPACE" \
+  --name "$MIMIR_SERVICE_ACCOUNT" \
+  --role-name "$MIMIR_ROLE_NAME" \
+  --attach-policy-arn "$MIMIR_POLICY_ARN" \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+  Verify Mimir ServiceAccount:
+  ============================
+kubectl get sa mimir-s3 \
+  -n monitoring \
+  -o yaml
+
+
+                           APPLICATION EKS
+                               │
+                               │
+                        Grafana Alloy
+                               │
+                               │ remote_write
+                               │
+                               ▼
+                     Internal Network
+                               │
+                          VPC Peering
+                               │
+                               ▼
+╔══════════════════════════════════════════════════════╗
+║                  MONITORING EKS                      ║
+║                                                      ║
+║              Internal NLB (Later Step)               ║
+║                        │                             ║
+║                        ▼                             ║
+║                 Mimir Gateway                        ║
+║                        │                             ║
+║                        ▼                             ║
+║                   Distributor                        ║
+║                        │                             ║
+║                        ▼                             ║
+║                    Ingester                          ║
+║                        │                             ║
+║             ┌──────────┴──────────┐                  ║
+║             │                     │                  ║
+║             ▼                     ▼                  ║
+║         EBS GP3                  S3                  ║
+║          WAL                  Blocks                ║
+║                                                      ║
+║                                                      ║
+║                    Query Path                        ║
+║                                                      ║
+║    Grafana → Query Frontend → Querier                ║
+║                                  │                   ║
+║                         ┌────────┴───────┐           ║
+║                         │                │           ║
+║                         ▼                ▼           ║
+║                      Ingester       Store Gateway    ║
+║                                          │           ║
+║                                          ▼           ║
+║                                          S3          ║
+╚══════════════════════════════════════════════════════╝
+
+Grafana
+   │
+   ▼
+Query Frontend
+   │
+   ▼
+Querier
+   │
+   ├──────────────► Ingester
+   │
+   └──────────────► Store Gateway
+                           │
+                           ▼
+                         AWS S3
+
+
+
+vi mimir-values.yaml
+====================
+
+
+# ============================================================
+# GRAFANA MIMIR
+# DEMO / LAB CONFIGURATION
+# AWS EKS + AWS S3
+# ============================================================
+# ============================================================
+# SERVICE ACCOUNT
+# IRSA SERVICE ACCOUNT FOR AWS S3 ACCESS
+# ============================================================
+serviceAccount:
+  create: false
+  name: mimir-s3
+# ============================================================
+# MIMIR CORE CONFIGURATION
+# ============================================================
+mimir:
+  structuredConfig:
+    # --------------------------------------------------------
+    # DISABLE KAFKA INGEST STORAGE
+    # --------------------------------------------------------
+    ingest_storage:
+      enabled: false
+    # --------------------------------------------------------
+    # DISABLE USAGE STATS
+    # --------------------------------------------------------
+    usage_stats:
+      enabled: false
+    # --------------------------------------------------------
+    # MULTITENANCY
+    # DISABLED FOR SIMPLE DEMO
+    # --------------------------------------------------------
+    multitenancy_enabled: false
+    # --------------------------------------------------------
+    # INGESTER
+    # --------------------------------------------------------
+    ingester:
+      push_grpc_method_enabled: true
+      ring:
+        replication_factor: 1
+    # --------------------------------------------------------
+    # BLOCK STORAGE
+    # AWS S3
+    # --------------------------------------------------------
+    blocks_storage:
+      backend: s3
+      storage_prefix: blocks
+      s3:
+        bucket_name: mimir-045667250694-ap-south-1
+        region: ap-south-1
+        endpoint: s3.ap-south-1.amazonaws.com
+# ============================================================
+# GATEWAY
+# ============================================================
+gateway:
+  enabled: true
+  replicas: 1
+# ============================================================
+# DISTRIBUTOR
+# ============================================================
+distributor:
+  enabled: true
+  replicas: 1
+# ============================================================
+# INGESTER
+# ============================================================
+ingester:
+  enabled: true
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    enabled: true
+    storageClass: monitoring-gp3
+    size: 20Gi
+# ============================================================
+# QUERIER
+# ============================================================
+querier:
+  enabled: true
+  replicas: 1
+# ============================================================
+# QUERY FRONTEND
+# ============================================================
+query_frontend:
+  enabled: true
+  replicas: 1
+# ============================================================
+# QUERY SCHEDULER
+# ============================================================
+query_scheduler:
+  enabled: true
+  replicas: 1
+# ============================================================
+# STORE GATEWAY
+# ============================================================
+store_gateway:
+  enabled: true
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    enabled: true
+    storageClass: monitoring-gp3
+    size: 20Gi
+# ============================================================
+# COMPACTOR
+# ============================================================
+compactor:
+  enabled: true
+  persistentVolume:
+    enabled: true
+    storageClass: monitoring-gp3
+    size: 20Gi
+# ============================================================
+# MIMIR ALERTMANAGER
+# DISABLED
+#
+# WE WILL USE GRAFANA ALERTING
+# ============================================================
+alertmanager:
+  enabled: false
+# ============================================================
+# RULER
+# DISABLED FOR INITIAL DEMO
+#
+# CAN ENABLE LATER IF YOU WANT
+# RECORDING RULES
+# ============================================================
+ruler:
+  enabled: false
+# ============================================================
+# MINIO
+# DISABLED - USING AWS S3
+# ============================================================
+minio:
+  enabled: false
+# ============================================================
+# KAFKA
+# NOT REQUIRED FOR DEMO
+# ============================================================
+kafka:
+  enabled: false
+
+
+
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+helm upgrade --install mimir \
+  grafana/mimir-distributed \
+  --namespace monitoring \
+  --values mimir-values.yaml
+
+
+kubectl get pods \
+  -n monitoring
+
+kubectl get all \
+  -n monitoring
+  
+kubectl get pvc \
+  -n monitoring
+
+kubectl get svc \
+  -n monitoring
