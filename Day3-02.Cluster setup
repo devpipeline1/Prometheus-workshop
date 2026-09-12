@@ -1,0 +1,185 @@
+
+Note:Replace variables from network-output.env
+
+cat > monitoring-eks.yaml <<EOF
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${MON_CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.36"
+
+vpc:
+  id: ${MON_VPC_ID}
+
+  subnets:
+    private:
+      ${AZ1}:
+        id: ${MON_PRIVATE_1_ID}
+      ${AZ2}:
+        id: ${MON_PRIVATE_2_ID}
+
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: monitoring-workers
+    instanceType: t3.xlarge
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 4
+    privateNetworking: true
+    volumeSize: 100
+    labels:
+      workload: monitoring
+    tags:
+      Environment: demo
+      Cluster: monitoring-eks
+      Purpose: observability
+
+addons:
+
+  - name: vpc-cni
+    resolveConflicts: overwrite
+  - name: coredns
+    resolveConflicts: overwrite
+  - name: kube-proxy
+    resolveConflicts: overwrite
+  - name: aws-ebs-csi-driver
+    resolveConflicts: overwrite
+EOF
+
+
+eksctl create cluster \
+  -f monitoring-eks.yaml \
+  --dry-run
+
+===================
+Application cluster
+===================
+
+cat > application-eks.yaml <<EOF
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${APP_CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.36"
+
+vpc:
+  id: ${APP_VPC_ID}
+  subnets:
+    private:
+      ${AZ1}:
+        id: ${APP_PRIVATE_1_ID}
+
+      ${AZ2}:
+        id: ${APP_PRIVATE_2_ID}
+
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: application-workers
+    instanceType: t3.large
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 4
+    privateNetworking: true
+    volumeSize: 50
+    labels:
+      workload: application
+    tags:
+      Environment: demo
+      Cluster: application-eks
+      Purpose: easytrade
+addons:
+  - name: vpc-cni
+    resolveConflicts: overwrite
+  - name: coredns
+    resolveConflicts: overwrite
+  - name: kube-proxy
+    resolveConflicts: overwrite
+  - name: aws-ebs-csi-driver
+    resolveConflicts: overwrite
+EOF
+
+eksctl create cluster \
+  -f application-eks.yaml \
+  --dry-run
+
+
+Rename contest so it will be easy to switch clusters
+kubectl config rename-context \
+  $(kubectl config get-contexts -o name | grep 'application-eks') \
+  application-eks
+
+kubectl config rename-context \
+  $(kubectl config get-contexts -o name | grep 'monitoring-eks') \
+  monitoring-eks
+
+
+Verify the EBS CSI driver:
+kubectl get pods -n kube-system \
+  -l app.kubernetes.io/name=aws-ebs-csi-driver
+
+Create storage class on both the clusters:
+=========================================
+
+kubectl config use-context application-eks
+
+vi application-gp3.yaml
+-----------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: application-gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fsType: ext4
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+
+kubectl apply -f application-gp3.yaml
+
+kubectl config use-context monitoring-eks
+
+vi monitoring-gp3.yaml
+-----------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: monitoring-gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fsType: ext4
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+
+kubectl apply -f monitoring-gp3.yaml
+
+
+check metric server installation on both the clusters:
+==================================================
+
+before install check cluster collecting node level metrics or not: you will not get an ouput
+
+kubectl --context monitoring-eks   get pods -n kube-system
+kubectl --context monitoring-eks top nodes
+
+kubectl --context application-eks   get pods -n kube-system
+kubectl --context application-eks top nodes
