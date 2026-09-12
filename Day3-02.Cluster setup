@@ -1,7 +1,7 @@
 
 Note:Replace variables from network-output.env
 
-$ cat monitoring-eks.yaml
+$ vi monitoring-eks.yaml
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
