@@ -1,0 +1,388 @@
+Switch to monitoring cluster
+kubectl config use-context monitoring-eks
+
+
+                    AWS S3
+                      │
+       ┌──────────────┼──────────────┐
+       │              │              │
+       ▼              ▼              ▼
+  Mimir S3       Loki S3         Tempo S3
+  Metrics          Logs            Traces
+       │              │              │
+       ▼              ▼              ▼
+  Mimir           Loki            Tempo
+
+
+Mimir ServiceAccount ──> Mimir IAM Role ──> Mimir S3
+Loki ServiceAccount   ──> Loki IAM Role   ──> Loki S3
+Tempo ServiceAccount  ──> Tempo IAM Role  ──> Tempo S3
+
+                         AWS
+                          │
+                    ┌─────┴─────┐
+                    │     S3    │
+                    └─────┬─────┘
+                          │
+          ┌───────────────┼────────────────┐
+          │               │                │
+          ▼               ▼                ▼
+     Mimir S3        Loki S3          Tempo S3
+      metrics           logs            traces
+          ▲               ▲                ▲
+          │               │                │
+    Mimir Pods       Loki Pods        Tempo Pods
+          │               │                │
+          └──────────── Monitoring EKS ─────┘
+
+
+We'll use three separate buckets:
+
+mimir-<account-id>-ap-south-1
+loki-<account-id>-ap-south-1
+tempo-<account-id>-ap-south-1
+
+Make sure AWS identity is correct
+aws sts get-caller-identity
+
+{
+    "UserId": "045667250694",
+    "Account": "045667250694",
+    "Arn": "arn:aws:iam::045667250694:root"
+}
+
+
+export AWS_REGION=ap-south-1
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+export MIMIR_BUCKET="mimir-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+export LOKI_BUCKET="loki-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+export TEMPO_BUCKET="tempo-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+
+Verify:
+
+echo $AWS_ACCOUNT_ID
+echo $MIMIR_BUCKET
+echo $LOKI_BUCKET
+echo $TEMPO_BUCKET
+
+Expected:
+
+045667250694
+mimir-045667250694-ap-south-1
+loki-045667250694-ap-south-1
+tempo-045667250694-ap-south-1
+
+
+Create the three S3 buckets
+
+$ aws s3api create-bucket \
+  --bucket "$MIMIR_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+$ aws s3api create-bucket \
+  --bucket "$LOKI_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+$ aws s3api create-bucket \
+  --bucket "$TEMPO_BUCKET" \
+  --region "$AWS_REGION" \
+  --create-bucket-configuration LocationConstraint="$AWS_REGION"
+
+Verify:
+$ aws s3 ls |grep -E "mimir|loki|tempo"
+2026-09-05 19:12:31 loki-045667250694-ap-south-1
+2026-09-05 19:12:37 tempo-045667250694-ap-south-1
+2026-09-05 19:12:21 mimir-045667250694-ap-south-1
+
+Enable S3 versioning
+
+aws s3api put-bucket-versioning \
+  --bucket "$MIMIR_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket "$LOKI_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-versioning \
+  --bucket "$TEMPO_BUCKET" \
+  --versioning-configuration Status=Enabled
+
+
+Enable default S3 encryption:
+==============================
+aws s3api put-bucket-encryption \
+  --bucket "$MIMIR_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+aws s3api put-bucket-encryption \
+  --bucket "$LOKI_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+aws s3api put-bucket-encryption \
+  --bucket "$TEMPO_BUCKET" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+Verify one:
+aws s3api get-bucket-encryption \
+  --bucket "$MIMIR_BUCKET"
+
+Create IAM policies:
+==================
+Mimir IAM Role
+       │
+       └── Mimir S3 only
+
+Loki IAM Role
+       │
+       └── Loki S3 only
+
+Tempo IAM Role
+       │
+       └── Tempo S3 only
+
+Loki ❌ cannot access Mimir bucket
+Tempo ❌ cannot access Loki bucket
+Mimir ❌ cannot access Tempo bucket
+
+
+Mimir IAM policy:
+==================
+
+cat > mimir-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MimirBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${MIMIR_BUCKET}"
+    },
+    {
+      "Sid": "MimirObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${MIMIR_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+aws iam create-policy \
+  --policy-name MimirS3AccessPolicy \
+  --policy-document file://mimir-s3-policy.json
+
+Loki IAM policy:
+===============
+
+cat > loki-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LokiBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${LOKI_BUCKET}"
+    },
+    {
+      "Sid": "LokiObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${LOKI_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+
+aws iam create-policy \
+  --policy-name LokiS3AccessPolicy \
+  --policy-document file://loki-s3-policy.json
+
+
+Tempo IAM policy:
+=================
+
+cat > tempo-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TempoBucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${TEMPO_BUCKET}"
+    },
+    {
+      "Sid": "TempoObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::${TEMPO_BUCKET}/*"
+    }
+  ]
+}
+EOF
+
+
+aws iam create-policy \
+  --policy-name TempoS3AccessPolicy \
+  --policy-document file://tempo-s3-policy.json
+
+
+Verify the policies:
+====================
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/MimirS3AccessPolicy
+
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/LokiS3AccessPolicy
+
+aws iam get-policy \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/TempoS3AccessPolicy
+
+
+Create IAM service accounts in Monitoring EKS
+
+monitoring-eks
+     │
+     ├── mimir-s3
+     │
+     ├── loki-s3
+     │
+     └── tempo-s3
+
+
+Make sure you are in monitoring eks cluster
+kubectl config use-context monitoring-eks
+kubectl config current-context
+
+
+Create Mimir IAM service account:
+=================================
+
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name mimir-s3 \
+  --role-name MimirS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/MimirS3AccessPolicy \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+The above command automatically create monitoring namespace in monitoring cluster:
+
+Create Loki IAM service account:
+================================
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name loki-s3 \
+  --role-name LokiS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/LokiS3AccessPolicy \
+  --approve \
+  --override-existing-serviceaccounts
+
+
+Create Tempo IAM service account:
+=================================
+eksctl create iamserviceaccount \
+  --cluster monitoring-eks \
+  --region ap-south-1 \
+  --namespace monitoring \
+  --name tempo-s3 \
+  --role-name TempoS3Role \
+  --attach-policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/TempoS3AccessPolicy \
+  --approve \
+  --override-existing-serviceaccounts
+
+$ kubectl get serviceaccounts -n monitoring
+NAME        AGE
+default     2m28s
+loki-s3     54s
+tempo-s3    13s
+mimir-s3   2m28s
+
+
+Now verify the IAM annotations atelase for any one sarvice account:
+
+$ kubectl get sa mimir-s3 \
+  -n monitoring \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+
+expected output:
+arn:aws:iam::045667250694:role/MimirS3Role
+
+
+Final S3/IAM validation:
+
+$ aws s3api head-bucket --bucket "$MIMIR_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::mimir-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+$ aws s3api head-bucket --bucket "$LOKI_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::loki-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+
+$ aws s3api head-bucket --bucket "$TEMPO_BUCKET"
+
+{
+    "BucketArn": "arn:aws:s3:::tempo-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+                    Monitoring EKS
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+        ▼                ▼                ▼
+   user/mimir-s3   user/loki-s3     user/tempo-s3
+        │                │                │
+        ▼                ▼                ▼
+   MimirS3Role       LokiS3Role       TempoS3Role
+        │                │                │
+        ▼                ▼                ▼
+  Mimir Bucket      Loki Bucket      Tempo Bucket
