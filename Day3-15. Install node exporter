@@ -1,0 +1,201 @@
+Connect to application cluster
+
+$ kubectl config use-context application-eks
+
+Add Node Exporter repo:
+=====================
+
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+
+  helm repo update
+
+  kubectl create namespace monitoring
+
+Install Node Exporter:
+======================
+  helm upgrade --install node-exporter \
+  prometheus-community/prometheus-node-exporter \
+  --namespace monitoring
+
+
+  kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus-node-exporter
+
+
+  kubectl get svc -n monitoring
+
+  Test Node Exporter metrics:
+  ==========================
+
+kubectl run node-exporter-test \
+  -n monitoring \
+  --image=curlimages/curl \
+  --restart=Never \
+  --rm \
+  -it \
+  -- \
+  curl http://node-exporter-prometheus-node-exporter.monitoring.svc.cluster.local:9100/metrics
+
+
+
+  Add Node Exporter scraping to Alloy:
+  ===================================
+  Add this after your cAdvisor section:
+
+
+
+        // =====================================================
+      // NODE EXPORTER DISCOVERY
+      // =====================================================
+
+      discovery.kubernetes "node_exporter_pods" {
+
+        role = "pod"
+
+        namespaces {
+
+          names = ["monitoring"]
+
+        }
+
+      }
+
+
+      // =====================================================
+      // FILTER NODE EXPORTER PODS
+      // =====================================================
+
+      discovery.relabel "node_exporter" {
+
+        targets = discovery.kubernetes.node_exporter_pods.targets
+
+
+        // Keep only Node Exporter pods
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_label_app_kubernetes_io_name",
+          ]
+
+          regex = "prometheus-node-exporter"
+
+          action = "keep"
+
+        }
+
+
+        // Keep port 9100
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          regex = "9100"
+
+          action = "keep"
+
+        }
+
+
+        // Create pod IP:9100 address
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_ip",
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          separator = ":"
+
+          regex = "(.+):(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:$2"
+
+        }
+
+
+        // Add cluster label
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        // Add node label
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+
+        // Add namespace label
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+        }
+        // Job label
+
+        rule {
+          target_label = "job"
+          replacement = "node-exporter"
+        }
+      }
+      // =====================================================
+      // SCRAPE NODE EXPORTER
+      // =====================================================
+
+      prometheus.scrape "node_exporter" {
+
+        targets =
+          discovery.relabel.node_exporter.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        metrics_path = "/metrics"
+
+      }
+
+
+helm upgrade alloy grafana/alloy \
+  -n alloy \
+  -f updated-alloy-values.yaml
+
+  kubectl rollout restart deployment/alloy \
+  -n alloy
+
+
+  kubectl get pods -n alloy
+
+Verify metrics in Grafana
+  
