@@ -786,16 +786,3 @@ Check nodes:
 ==========
 count(kube_node_info)
 
-
-
-kubectl patch svc easytrade-frontendreverseproxy   -n easytrade   -p '{
-    "metadata": {
-      "annotations": {
-        "service.beta.kubernetes.io/aws-load-balancer-scheme": "internet-facing",
-        "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip"
-      }
-    },
-    "spec": {
-      "type": "LoadBalancer"
-    }
-  }'
