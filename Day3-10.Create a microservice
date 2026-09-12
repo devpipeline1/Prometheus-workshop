@@ -1,0 +1,874 @@
+Let's build a small metrics-enabled demo microservice and connect it to our easytrade application:
+easytrade-demo-service/
+├── app.py
+├── requirements.txt
+└── Dockerfile
+
+Create a ec2 instance:
+====================
+
+yum install git docker -y
+
+mkdir easytrade-demo-service
+
+cd easytrade-demo-service
+
+vi app.py
+from flask import Flask, jsonify
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import random
+import time
+
+app = Flask(__name__)
+
+
+# ============================================================
+# PROMETHEUS METRICS
+# ============================================================
+
+REQUEST_COUNT = Counter(
+    "easytrade_demo_http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"]
+)
+
+REQUEST_DURATION = Histogram(
+    "easytrade_demo_http_request_duration_seconds",
+    "HTTP request duration",
+    ["endpoint"]
+)
+
+ORDERS_TOTAL = Counter(
+    "easytrade_demo_orders_total",
+    "Total demo orders processed"
+)
+
+ACTIVE_USERS = Gauge(
+    "easytrade_demo_active_users",
+    "Current simulated active users"
+)
+
+
+# ============================================================
+# APPLICATION ENDPOINT
+# ============================================================
+
+@app.route("/api/demo")
+def demo():
+
+    start_time = time.time()
+
+    # Simulate application processing
+    processing_time = random.uniform(0.1, 0.8)
+    time.sleep(processing_time)
+
+    # Generate demo metrics
+    ORDERS_TOTAL.inc()
+
+    active_users = random.randint(5, 50)
+    ACTIVE_USERS.set(active_users)
+
+    duration = time.time() - start_time
+
+    REQUEST_COUNT.labels(
+        method="GET",
+        endpoint="/api/demo",
+        status="200"
+    ).inc()
+
+    REQUEST_DURATION.labels(
+        endpoint="/api/demo"
+    ).observe(duration)
+
+    return jsonify({
+        "status": "success",
+        "message": "EasyTrade Demo Service is working",
+        "processing_time_seconds": round(duration, 3),
+        "active_users": active_users
+    })
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health")
+def health():
+
+    return jsonify({
+        "status": "healthy"
+    })
+
+
+# ============================================================
+# PROMETHEUS METRICS
+# ============================================================
+
+@app.route("/metrics")
+def metrics():
+
+    return generate_latest(), 200, {
+        "Content-Type": CONTENT_TYPE_LATEST
+    }
+
+# ============================================================
+# START APPLICATION
+# ============================================================
+if __name__ == "__main__":
+
+    app.run(
+        host="0.0.0.0",
+        port=8080
+    )
+
+
+
+vi requirements.txt:
+===================
+Flask==3.1.0
+prometheus-client==0.21.1
+gunicorn==23.0.0
+
+Create Dockerfile
+================
+vi Dockerfile
+
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+EXPOSE 8080
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
+
+
+docker build -t devpipeline/easytrade:demo .
+
+docker images
+
+docker login
+
+docker push devpipeline/easytrade:demo
+
+Test the image:
+==============
+docker run \
+  -p 8080:8080 \
+  devpipeline/easytrade:demo
+
+open another session and run: 
+[root@ip-172-31-1-136 ~]# curl http://localhost:8080/health
+{"status":"healthy"}
+
+[root@ip-172-31-1-136 ~]# curl http://localhost:8080/api/demo
+{"active_users":46,"message":"EasyTrade Demo Service is working","processing_time_seconds":0.163,"status":"success"}
+
+curl http://localhost:8080/metrics | grep  easytrade | grep -v ^#
+easytrade_demo_orders_total 0.0
+easytrade_demo_orders_created 1.7890713682045507e+09
+easytrade_demo_active_users 0.0
+
+
+
+Now we will deploy this image/microservice into our easytrade application:
+
+vi easytrade-demo.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easytrade-demo-service
+  namespace: easytrade
+  labels:
+    app: easytrade-demo-service
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: easytrade-demo-service
+
+  template:
+    metadata:
+      labels:
+        app: easytrade-demo-service
+
+    spec:
+      containers:
+        - name: easytrade-demo-service
+
+          image: devpipeline/easytrade:demo
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: easytrade-demo-service
+  namespace: easytrade
+  labels:
+    app: easytrade-demo-service
+
+spec:
+  selector:
+    app: easytrade-demo-service
+
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+
+  type: ClusterIP
+
+
+
+Deploy it on application kubernetes cluster
+kubectl apply -f easytrade-demo.yaml
+
+kubectl get pods -n easytrade -l app=easytrade-demo-service
+
+kubectl get svc -n easytrade easytrade-demo-service
+
+
+Test it on cluster:
+==================
+
+kubectl run demo-test \
+  -n easytrade \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- \
+  curl \
+  http://easytrade-demo-service:8080/api/demo
+
+
+Run above command 4-5times and check the metrics:
+================================================
+  $ kubectl run metrics-test \
+  -n easytrade \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- \
+  curl -s \
+  http://easytrade-demo-service:8080/metrics
+
+
+
+
+  Update Alloy configuration:
+  ==========================
+
+  easytrade-demo-service
+       │
+       │ /metrics
+       ▼
+     Alloy
+       │
+       │ remote_write
+       ▼
+     Mimir
+       │
+       ▼
+    Grafana
+
+
+
+    easytrade-demo-service
+        │
+        ├── /api/demo
+        │
+        └── /metrics
+              │
+              ├── HTTP Requests
+              ├── Request Duration
+              ├── Orders
+              └── Active Users
+
+
+easytrade_demo_http_requests_total
+easytrade_demo_http_request_duration_seconds
+easytrade_demo_orders_total
+easytrade_demo_active_users
+
+
+
+Generate traffic:
+
+kubectl run easytrade-load-test \
+  -n easytrade \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- sh -c '
+
+while true
+do
+
+  curl -s \
+    http://easytrade-demo-service:8080/api/demo
+
+  sleep 2
+
+done
+'
+
+Check metrics again:
+===================
+kubectl run metrics-test \
+  -n easytrade \
+  --rm \
+  -it \
+  --restart=Never \
+  --image=curlimages/curl \
+  -- \
+  curl -s http://easytrade-demo-service:8080/metrics
+
+
+
+easytrade_demo_http_requests_total 50
+easytrade_demo_orders_total 50
+easytrade_demo_active_users 42
+
+
+
+
+Configure Alloy to collect ONLY this application:
+===============================================
+we can configure Alloy to collect metrics only from: 
+
+Namespace:
+easytrade
+
+Service:
+easytrade-demo-service
+
+Port:
+8080
+
+Metrics Path:
+/metrics
+
+
+So Alloy will ignore the other EasyTrade services.
+
+
+                    APPLICATION EKS
+                    =================
+
+              EasyTrade Demo Service
+                     │
+                     │
+                  /metrics
+                     │
+                     ▼
+                Grafana Alloy
+                     │
+                     │ Prometheus remote_write
+                     ▼
+              ╔═══════════════════╗
+              ║   Grafana Mimir   ║
+              ╚═══════════════════╝
+                     │
+                     ▼
+                  Grafana
+
+make sure you are in application-eks cluster
+
+environment variables:
+=====================
+cluster=application-eks
+environment=demo
+namespace=easytrade
+service=easytrade-demo-service
+
+
+
+vi Updated-alloy-values.yaml
+======================
+alloy:
+  configMap:
+    content: |
+      // =====================================================
+      // LOGGING
+      // =====================================================
+
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+
+      // =====================================================
+      // REMOTE WRITE TO MIMIR
+      // =====================================================
+
+      prometheus.remote_write "mimir" {
+
+        endpoint {
+
+          url = "http://a1a59c4d9dc284219ba4fd9ffd58cd12-1296e3666176ea98.elb.ap-south-1.amazonaws.com/api/v1/push"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // DISCOVER KUBERNETES NODES
+      // =====================================================
+
+      discovery.kubernetes "nodes" {
+
+        role = "node"
+
+      }
+
+
+      // =====================================================
+      // KUBELET METRICS
+      // =====================================================
+
+      discovery.relabel "kubelet" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "kubelet" {
+
+        targets = discovery.relabel.kubelet.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // CADVISOR METRICS
+      // =====================================================
+
+      discovery.relabel "cadvisor" {
+
+        targets = discovery.kubernetes.nodes.targets
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_address_InternalIP",
+          ]
+
+          regex = "(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:10250"
+
+        }
+
+
+        rule {
+
+          target_label = "__metrics_path__"
+
+          replacement = "/metrics/cadvisor"
+
+        }
+
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_node_name",
+          ]
+
+          target_label = "node"
+
+        }
+
+      }
+
+
+      prometheus.scrape "cadvisor" {
+
+        targets = discovery.relabel.cadvisor.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scheme = "https"
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+
+        tls_config {
+
+          insecure_skip_verify = true
+
+        }
+
+
+        bearer_token_file =
+          "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+      }
+
+
+      // =====================================================
+      // KUBE-STATE-METRICS
+      // =====================================================
+
+      prometheus.scrape "kube_state_metrics" {
+
+        targets = [
+          {
+            "__address__" = "kube-state-metrics.kube-state-metrics.svc.cluster.local:8080",
+            "cluster"     = "application-eks",
+            "job"         = "kube-state-metrics",
+          },
+        ]
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "30s"
+
+
+        scrape_timeout = "10s"
+
+      }
+
+
+      // =====================================================
+      // EASYTRADE APPLICATION POD DISCOVERY
+      // =====================================================
+
+      discovery.kubernetes "easytrade_pods" {
+
+        role = "pod"
+
+        namespaces {
+          names = ["easytrade"]
+        }
+
+      }
+
+
+      // =====================================================
+      // FILTER ONLY EASYTRADE DEMO SERVICE
+      // =====================================================
+
+      discovery.relabel "easytrade_demo_service" {
+
+        targets = discovery.kubernetes.easytrade_pods.targets
+
+
+        // ---------------------------------------------------
+        // Keep only easytrade-demo-service pods
+        // ---------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_label_app",
+          ]
+
+          regex = "easytrade-demo-service"
+
+          action = "keep"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Keep only container port 8080
+        // ---------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          regex = "8080"
+
+          action = "keep"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Set target address
+        // PodIP:8080
+        // ---------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_ip",
+            "__meta_kubernetes_pod_container_port_number",
+          ]
+
+          separator = ":"
+
+          regex = "(.+):(.+)"
+
+          target_label = "__address__"
+
+          replacement = "$1:$2"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Cluster label
+        // ---------------------------------------------------
+
+        rule {
+
+          target_label = "cluster"
+
+          replacement = "application-eks"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Namespace label
+        // ---------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_namespace",
+          ]
+
+          target_label = "namespace"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Pod label
+        // ---------------------------------------------------
+
+        rule {
+
+          source_labels = [
+            "__meta_kubernetes_pod_name",
+          ]
+
+          target_label = "pod"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Service label
+        // ---------------------------------------------------
+
+        rule {
+
+          target_label = "service"
+
+          replacement = "easytrade-demo-service"
+
+        }
+
+
+        // ---------------------------------------------------
+        // Job label
+        // ---------------------------------------------------
+
+        rule {
+
+          target_label = "job"
+
+          replacement = "easytrade-demo-service"
+
+        }
+
+      }
+
+
+      // =====================================================
+      // SCRAPE EASYTRADE APPLICATION METRICS
+      // =====================================================
+
+      prometheus.scrape "easytrade_demo_service" {
+
+        targets =
+          discovery.relabel.easytrade_demo_service.output
+
+
+        forward_to = [
+          prometheus.remote_write.mimir.receiver,
+        ]
+
+
+        scrape_interval = "15s"
+
+
+        scrape_timeout = "10s"
+
+
+        metrics_path = "/metrics"
+
+      }
+
+
+controller:
+  type: deployment
+
+  replicas: 1
+
+
+rbac:
+  create: true
+
+
+Lables are important we are controlling metric collection with lables
+
+  $ kubectl get pods \
+  -n easytrade \
+  --show-labels | \
+  grep easytrade-demo-service
+easytrade-demo-service-5f5bc6dfd6-wbr2g                1/1     Running   0          20m    app=easytrade-demo-service,pod-template-hash=5f5bc6dfd6,topology.kubernetes.io/region=ap-south-1,topology.kubernetes.io/zone=ap-south-1b
+
+
+$ kubectl get deployment \
+  easytrade-demo-service \
+  -n easytrade \
+  -o jsonpath='{.spec.template.metadata.labels}'
+
+{"app":"easytrade-demo-service"}
+
+
+helm upgrade alloy \
+  grafana/alloy \
+  -n alloy \
+  -f updated-alloy-values.yaml
+
+kubectl rollout restart deploy alloy -n alloy
+
+kubectl get pods -n alloy
+
+check below metrics in grafana
+
+easytrade_demo_http_requests_total
+easytrade_demo_orders_total
+easytrade_demo_active_users
+
+
+count by (cluster, namespace, pod, service, job)
+(
+  easytrade_demo_http_requests_total
+)
+  
