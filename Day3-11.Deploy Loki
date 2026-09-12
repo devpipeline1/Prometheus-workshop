@@ -1,0 +1,300 @@
+Loki:
+====
+                    ┌──────────────────────┐
+                    │   APPLICATION EKS    │
+                    │                      │
+                    │  Online Boutique     │
+                    │       │              │
+                    │       │ logs         │
+                    └───────┼──────────────┘
+                            │
+                            │
+                     ┌──────▼──────┐
+                     │    Alloy    │
+                     └──────┬──────┘
+                            │
+                     Private VPC
+                     + VPC Peering
+                            │
+                            ▼
+                ┌───────────────────────┐
+                │    MONITORING EKS     │
+                │                       │
+                │   ┌───────────────┐   │
+                │   │     Loki      │   │
+                │   └───────┬───────┘   │
+                │           │           │
+                │           ▼           │
+                │       ┌───────┐       │
+                │       │  S3   │       │
+                │       └───────┘       │
+                │                       │
+                │   ┌───────────────┐   │
+                │   │    Grafana    │   │
+                │   └───────────────┘   │
+                └───────────────────────┘
+
+FYI.... we should use the existing monitoring S3 bucket and IAM role we already created specifically for
+
+Loki's storage model is TSDB + schema v13 + S3
+
+Bucket:
+loki-045667250694-ap-south-1
+
+ServiceAccount:
+loki-s3
+
+IAM Role:
+LokiS3Role
+
+Deploy Loki:
+===========
+$ aws s3api head-bucket \
+  --bucket "$LOKI_BUCKET" \
+  --region "$AWS_REGION"
+{
+    "BucketArn": "arn:aws:s3:::loki-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+$ aws s3api head-bucket \
+  --bucket "$LOKI_BUCKET" \
+  --region "$AWS_REGION"
+{
+    "BucketArn": "arn:aws:s3:::loki-045667250694-ap-south-1",
+    "BucketRegion": "ap-south-1",
+    "AccessPointAlias": false
+}
+
+
+
+$ kubectl get serviceaccount loki-s3 -n monitoring
+NAME      AGE
+loki-s3   3h24m
+
+
+$ kubectl get serviceaccount loki-s3 \
+  -n monitoring \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+echo
+
+arn:aws:iam::045667250694:role/LokiS3Role
+
+Add the current Loki Helm repository:
+=====================================
+
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+helm repo update
+
+helm search repo grafana-community/loki
+
+Create Loki values for configuration:
+===================================
+vi loki-values.yaml
+
+deploymentMode: Monolithic
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  storage:
+    type: s3
+
+    bucketNames:
+      chunks: loki-045667250694-ap-south-1
+      ruler: loki-045667250694-ap-south-1
+      admin: loki-045667250694-ap-south-1
+
+    s3:
+      region: ap-south-1
+      s3ForcePathStyle: false
+      insecure: false
+
+  storage_config:
+    aws:
+      region: ap-south-1
+      bucketnames: loki-045667250694-ap-south-1
+      s3forcepathstyle: false
+
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+    retention_period: 168h
+
+  pattern_ingester:
+    enabled: true
+
+  rulerConfig:
+    enable_api: true
+
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+
+serviceAccount:
+  create: false
+  name: loki-s3
+
+minio:
+  enabled: false
+
+singleBinary:
+  replicas: 1
+
+  persistence:
+    enabled: true
+    storageClass: monitoring-gp3
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+
+gateway:
+  enabled: true
+  replicas: 1
+
+  service:
+    type: ClusterIP
+
+backend:
+  replicas: 0
+
+read:
+  replicas: 0
+
+write:
+  replicas: 0
+
+ingester:
+  replicas: 0
+
+querier:
+  replicas: 0
+
+queryFrontend:
+  replicas: 0
+
+queryScheduler:
+  replicas: 0
+
+distributor:
+  replicas: 0
+
+compactor:
+  replicas: 0
+
+indexGateway:
+  replicas: 0
+
+bloomPlanner:
+  replicas: 0
+
+bloomBuilder:
+  replicas: 0
+
+bloomGateway:
+  replicas: 0
+
+lokiCanary:
+  enabled: true
+
+
+===========================
+
+The important parts are:
+store: tsdb
+object_store: s3
+schema: v13
+
+serviceAccount:
+  create: false
+  name: loki-s3
+===========================
+
+Install Loki:
+============
+helm upgrade --install loki \
+  grafana-community/loki \
+  --namespace monitoring \
+  --values loki-values.yaml
+
+$ kubectl get pods -n monitoring | grep -i loki
+loki-0                                                      2/2     Running   0          89s
+loki-canary-7jddt                                           1/1     Running   0          10m
+loki-canary-kwlxk                                           1/1     Running   0          10m
+loki-chunks-cache-0                                         2/2     Running   0          10m
+loki-gateway-dc8996b89-2v2wv                                2/2     Running   0          10m
+loki-results-cache-0                                        2/2     Running   0          10m
+
+
+
+$ kubectl get pvc -n monitoring| grep -i loki
+storage-loki-0                                                                                 Bound    pvc-bbd21f11-aaa8-4ecb-9a4d-a71e4e555c2c   20Gi       RWO            monitoring-gp3   <unset>                 81s
+
+$ kubectl get svc -n monitoring | grep -i loki
+loki                                             ClusterIP      172.20.113.61    <none>                                                                          3100/TCP,9095/TCP,9096/TCP   10m
+loki-canary                                      ClusterIP      172.20.160.223   <none>                                                                          3500/TCP                     10m
+loki-chunks-cache                                ClusterIP      None             <none>                                                                          11211/TCP,9150/TCP           10m
+loki-gateway                                     ClusterIP      172.20.158.64    <none>                                                                          80/TCP                       10m
+loki-gateway-exporter                            ClusterIP      172.20.220.69    <none>                                                                          4040/TCP                     10m
+loki-headless                                    ClusterIP      None             <none>                                                                          3100/TCP,9095/TCP,9096/TCP   10m
+loki-memberlist                                  ClusterIP      None             <none>                                                                          7946/TCP                     10m
+loki-results-cache                               ClusterIP      None             <none>                                                                          11211/TCP,9150/TCP           10m
+
+Test Loki readiness:
+
+kubectl run loki-test \
+  -n monitoring \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl:8.10.1 \
+  -- \
+  curl -s http://loki-gateway.monitoring.svc.cluster.local/ready
+
+
+kubectl run loki-test \
+  -n monitoring \
+  --rm -it \
+  --restart=Never \
+  --image=curlimages/curl:8.10.1 \
+  -- \
+  curl -s http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/status/buildinfo
+
+Application EKS
+      │
+      │ container logs
+      ▼
+   Grafana Alloy
+      │
+      │ VPC Peering
+      ▼
+Monitoring EKS
+      │
+      ▼
+Loki Gateway
+      │
+      ▼
+    Loki 3.7.7
+      │
+      ▼
+      S3
+      │
+      └── loki-045667250694-ap-south-1
+
+Grafana
+   │
+   └──> Loki http://loki.monitoring.svc.cluster.local:3100
