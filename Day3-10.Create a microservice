@@ -142,13 +142,13 @@ EXPOSE 8080
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]
 
 
-docker build -t devpipeline/easytrade:demo .
+docker build -t devpipeline/easytrade:v1 .
 
 docker images
 
 docker login
 
-docker push devpipeline/easytrade:demo
+docker push devpipeline/easytrade:v1
 
 Test the image:
 ==============
