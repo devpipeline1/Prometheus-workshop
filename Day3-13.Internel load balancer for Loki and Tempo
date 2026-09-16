@@ -93,7 +93,7 @@ kubectl get svc prometheus-remote-write loki-ingest tempo-ingest \
 checl all 3 NLB address:
 =======================
 $ kubectl get svc \
-  prometheus-remote-write \
+  mimir-gateway \
   loki-ingest \
   tempo-ingest \
   -n monitoring \
