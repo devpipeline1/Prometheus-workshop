@@ -34,10 +34,10 @@
 Grafana Mimir Installation Plan:
 
 Step 1   Add Grafana Helm repository
-Step 2   Create AWS S3 bucket
-Step 3   Create IAM policy for Mimir S3 access
-Step 4   Create IAM Role for Mimir
-Step 5   Create Mimir ServiceAccount with IRSA
+Step 2   Create AWS S3 bucket -done
+Step 3   Create IAM policy for Mimir S3 access -done
+Step 4   Create IAM Role for Mimir -done
+Step 5   Create Mimir ServiceAccount with IRSA -done
 Step 6   Create Mimir Helm values
 Step 7   Install Mimir
 Step 8   Verify all pods
