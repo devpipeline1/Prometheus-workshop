@@ -152,6 +152,12 @@ reclaimPolicy: Delete
 
 kubectl apply -f application-gp3.yaml
 
+$ kubectl get sc
+NAME              PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+application-gp3   ebs.csi.aws.com         Delete          WaitForFirstConsumer   true                   14s
+gp2               kubernetes.io/aws-ebs   Delete          WaitForFirstConsumer   false                  28m
+
+
 kubectl config use-context monitoring-eks
 
 vi monitoring-gp3.yaml
