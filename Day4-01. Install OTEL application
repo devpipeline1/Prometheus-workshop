@@ -7,7 +7,7 @@ Day3-04.Create S3+IAM service account for Mimir,loki and tempo
 Day3-05.Install Grafana Mimir
 Day3-06.Create internel load balancer for Mimir
 Day3-13.Internel Load Balancer for Loki and tempo
-Day3-08.Install Grafana
+Day3-07.Install Grafana
 Day3-11.Deploy Loki
 Day3-12.Deploy Tempo
 Day3-15.Install node exporter
