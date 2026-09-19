@@ -1,0 +1,863 @@
+
+1. Metrics Flow
+Application Pods → OTel SDK (metrics) → OTel Collector Agent → Alloy → Mimir → Grafana
+
+2. Logs Flow
+Application Pods → OTel SDK (logs) → OTel Collector Agent → Alloy → Loki → Grafana
+
+3. Traces Flow
+Application Pods → OTel SDK (traces) → OTel Collector Agent → Alloy → Tempo → Grafana
+
+
+
+Node CPU:
+========
+100 *
+(
+  1 -
+  avg by (node) (
+    rate(
+      node_cpu_seconds_total{
+        cluster="application-eks",
+        mode="idle"
+      }[5m]
+    )
+  )
+)
+
+
+Node Memory %
+============
+
+100 *
+(
+  1 -
+  (
+    node_memory_MemAvailable_bytes
+    /
+    node_memory_MemTotal_bytes
+  )
+)
+
+
+
+100 *
+(
+  1 -
+  (
+    avg by (node) (
+      node_memory_MemAvailable_bytes{
+        cluster="application-eks"
+      }
+    )
+    /
+    avg by (node) (
+      node_memory_MemTotal_bytes{
+        cluster="application-eks"
+      }
+    )
+  )
+)
+
+
+
+Node Filesystem %
+=================
+
+100 *
+(
+  1 -
+  (
+    node_filesystem_avail_bytes{
+      cluster="application-eks",
+      fstype!~"tmpfs|overlay|ramfs",
+      mountpoint="/"
+    }
+    /
+    node_filesystem_size_bytes{
+      cluster="application-eks",
+      fstype!~"tmpfs|overlay|ramfs",
+      mountpoint="/"
+    }
+  )
+)
+
+
+100 *
+(
+  1 -
+  (
+    avg by (node) (
+      node_filesystem_avail_bytes{
+        cluster="application-eks",
+        fstype!~"tmpfs|overlay|ramfs",
+        mountpoint="/"
+      }
+    )
+    /
+    avg by (node) (
+      node_filesystem_size_bytes{
+        cluster="application-eks",
+        fstype!~"tmpfs|overlay|ramfs",
+        mountpoint="/"
+      }
+    )
+  )
+)
+
+
+
+
+Kubernetes:
+===========
+
+All Pods CPU utlization
+=======================
+
+sum by (namespace, pod) (
+  rate(
+    container_cpu_usage_seconds_total{
+      cluster="application-eks",
+      container!="",
+      container!="POD"
+    }[5m]
+  )
+)
+
+
+If i need only top 5 pods
+=========================
+
+topk(
+  5,
+  sum by (namespace, pod, node) (
+    rate(
+      container_cpu_usage_seconds_total{
+        cluster="application-eks",
+        container!="",
+        container!="POD"
+      }[5m]
+    )
+  )
+)
+
+
+Pod memory
+==========
+
+sum by (namespace, pod) (
+  container_memory_working_set_bytes{
+    cluster="application-eks",
+    container!="",
+    container!="POD"
+  }
+)
+
+
+but its showing in bytes
+=========================
+
+sum by (namespace, pod) (
+  container_memory_working_set_bytes{
+    cluster="application-eks",
+    container!="",
+    container!="POD"
+  }
+)
+/
+sum by (namespace, pod) (
+  container_spec_memory_limit_bytes{
+    cluster="application-eks",
+    container!="",
+    container!="POD"
+  }
+)
+* 100
+
+
+top 5 memory utlization pods
+===========================
+topk(
+  5,
+  (
+    sum by (namespace, pod) (
+      container_memory_working_set_bytes{
+        cluster="application-eks",
+        container!="",
+        container!="POD"
+      }
+    )
+    /
+    sum by (namespace, pod) (
+      container_spec_memory_limit_bytes{
+        cluster="application-eks",
+        container!="",
+        container!="POD"
+    } > 0
+    )
+  ) * 100
+)
+
+
+
+Running pods
+============
+
+sum by(__name__) (kubelet_running_pods{cluster="application-eks"})
+
+
+Kubernetes CPU by Namespace
+===========================
+sum by (namespace) (
+  rate(
+    container_cpu_usage_seconds_total{
+      cluster="application-eks",
+      container!="",
+      container!="POD"
+    }[5m]
+  )
+)
+
+
+
+
+
+Application:
+===========
+
+
+Payment Transactions / Sec:
+==========================
+rate(demo_payment_transactions_total[5m])
+
+Unit:
+
+transactions/sec
+
+
+Cart Add Item Rate:
+===================
+
+rate(demo_cart_add_item_latency_seconds_count[5m])
+
+
+
+Shipping Operations:
+====================
+rate(
+  demo_shipping_items_shipped_total[5m]
+)
+
+Title:
+
+Items Shipped / Sec
+
+
+Notification Operations:
+========================
+rate(
+  demo_notification_confirmations_total[5m]
+)
+
+Title:
+
+Notification Confirmations / Sec
+
+
+Currency Conversion:
+===================
+rate(
+  demo_exchange_conversions_counter_total[5m]
+)
+
+Title:
+
+Currency Conversions / Sec
+
+
+Ads Served / Sec:
+================
+
+sum(rate(demo_ad_served_total[5m]))
+
+sum by (category) (
+  rate(demo_ad_served_total[5m])
+)
+
+
+
+JVM CPU Utilization:
+====================
+avg by (service_name) (
+  jvm_cpu_recent_utilization_ratio
+)
+
+
+
+JVM Memory Used:
+===============
+avg by (service_name) (
+  jvm_memory_used_bytes
+)
+
+
+
+
+JVM Thread Count:
+===============
+avg by (service_name) (
+  jvm_thread_count
+)
+
+
+How many HTTP requests are the application receiving per second?:
+===============================================================
+
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+
+
+
+Request Rate by Service:
+======================
+
+sum by (job) (
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+
+
+Error Rate %
+===========
+
+0.5% of HTTP requests are returning 5xx.
+
+100 *
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib",
+      http_status_code=~"5.."
+    }[5m]
+  )
+)
+/
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+
+
+
+5xx Requests/sec:
+================
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib",
+      http_status_code=~"5.."
+    }[5m]
+  )
+)
+
+If Grafana shows:
+0.02
+
+that means approximately:
+0.02 failures / second
+
+or:
+1.2 failures / minute
+
+
+Number of Failed Requests:
+=========================
+
+How many HTTP 5xx responses occurred during the last 5 minutes?
+
+sum(
+  increase(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib",
+      http_status_code=~"5.."
+    }[5m]
+  )
+)
+
+
+4xx Requests:
+=============
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib",
+      http_status_code=~"4.."
+    }[5m]
+  )
+)
+
+
+P95 Latency:
+===========
+
+histogram_quantile(
+  0.95,
+  sum by (le) (
+    rate(
+      http_server_duration_milliseconds_bucket{
+        job=~"opentelemetry-demo/.+|cart",
+        job!="opentelemetry-demo/otelcol-contrib"
+      }[5m]
+    )
+  )
+)
+
+
+if the output shows 50ms means 
+
+95% of requests are completing in 50 ms or less.
+
+
+P99 Latency:
+===========
+histogram_quantile(
+  0.99,
+  sum by (le) (
+    rate(
+      http_server_duration_milliseconds_bucket{
+        job=~"opentelemetry-demo/.+|cart",
+        job!="opentelemetry-demo/otelcol-contrib"
+      }[5m]
+    )
+  )
+)
+
+if the output shows 150ms means 
+
+95% of requests are completing in 150 ms or less.
+
+
+P95 Latency by Service:
+=====================
+histogram_quantile(
+  0.95,
+  sum by (le, job) (
+    rate(
+      http_server_duration_milliseconds_bucket{
+        job=~"opentelemetry-demo/.+|cart",
+        job!="opentelemetry-demo/otelcol-contrib"
+      }[5m]
+    )
+  )
+)
+
+
+
+Average Latency:
+===============
+
+sum(
+  rate(
+    http_server_duration_milliseconds_sum{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+/
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+
+
+  =======
+= SLO/SLI =
+  =======
+
+SLO = 99% successful requests
+Allowed error = 1%
+
+
+first check availbale SLI:
+========================
+100 *
+(
+  1 -
+  (
+    sum(
+      rate(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib",
+          http_status_code=~"5.."
+        }[5m]
+      )
+    )
+    /
+    sum(
+      rate(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib"
+        }[5m]
+      )
+    )
+  )
+)
+
+
+Example result:
+
+99.82%
+
+
+
+Availability SLO:
+=================
+
+100 *
+(
+  1 -
+  (
+    sum(
+      rate(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib",
+          http_status_code=~"5.."
+        }[5m]
+      )
+    )
+    /
+    sum(
+      rate(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib"
+        }[5m]
+      )
+    )
+  )
+)
+
+
+configure the Grafana threshold at:
+
+99%
+
+
+So visually:
+
+    Availability SLI 99.82%
+    SLO: 99%
+
+
+
+
+SLO 2 — Latency:
+
+95% of requests should complete within 500 ms.
+
+Latency SLI — <500 ms
+
+
+100 *
+sum(
+  rate(
+    http_server_duration_milliseconds_bucket{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib",
+      le="500"
+    }[5m]
+  )
+)
+/
+sum(
+  rate(
+    http_server_duration_milliseconds_count{
+      job=~"opentelemetry-demo/.+|cart",
+      job!="opentelemetry-demo/otelcol-contrib"
+    }[5m]
+  )
+)
+
+output SLI might: 97.4%
+Your latency SLO is: 95%
+
+
+
+
+Error Budget:
+============
+
+SLO 99%
+Error budget = 1%
+
+You can tolerate 1% unsuccessful requests during the SLO window.
+
+
+Error Budget Remaining:
+
+100 *
+(
+  1 -
+  (
+    sum(
+      increase(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib",
+          http_status_code=~"5.."
+        }[30d]
+      )
+    )
+    /
+    sum(
+      increase(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib"
+        }[30d]
+      )
+    )
+    / 0.01
+  )
+)
+
+
+
+
+Error Budget Consumed %:
+
+100 *
+(
+  (
+    sum(
+      increase(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib",
+          http_status_code=~"5.."
+        }[30d]
+      )
+    )
+    /
+    sum(
+      increase(
+        http_server_duration_milliseconds_count{
+          job=~"opentelemetry-demo/.+|cart",
+          job!="opentelemetry-demo/otelcol-contrib"
+        }[30d]
+      )
+    )
+  )
+  / 0.01
+)
+
+
+Burn Rate:
+=========
+
+Allowed error rate = 1%
+
+1    = consuming budget exactly at allowed rate
+2    = consuming budget 2x faster
+5    = consuming budget 5x faster
+10   = consuming budget 10x faster
+
+5-minute burn rate:
+
+(
+  sum(
+    rate(
+      http_server_duration_milliseconds_count{
+        job=~"opentelemetry-demo/.+|cart",
+        job!="opentelemetry-demo/otelcol-contrib",
+        http_status_code=~"5.."
+      }[5m]
+    )
+  )
+  /
+  sum(
+    rate(
+      http_server_duration_milliseconds_count{
+        job=~"opentelemetry-demo/.+|cart",
+        job!="opentelemetry-demo/otelcol-contrib"
+      }[5m]
+    )
+  )
+)
+/
+0.01
+
+
+
+
+Logs:
+====
+All Application/Kubernetes Logs
+{service_name=~".+"}
+
+
+
+Error Logs
+=========
+{service_name=~".+"} |= "error"
+
+
+Or case-insensitive:
+{service_name=~".+"} |~ "(?i)error|exception|failed"
+
+
+Logs by Service
+sum by (service_name) (
+  count_over_time(
+    {service_name=~".+"}[$__interval]
+  )
+)
+
+
+{service_name="payment"} |= `Payment request failed. `
+
+Organize field by name
+extract value
+
+
+
+
+
+Traces:
+======
+{name="HTTP GET" && resource.service.name="frontend-web" && duration>1s}
+
+All spans from a service
+
+{resource.service.name="frontend-proxy" && duration>10s}
+
+Specific operation:
+==================
+{resource.service.name="frontend" && name="GET"}
+
+
+Slow spans (>250ms)
+==================
+{resource.service.name="frontend" && duration>250ms}
+
+
+
+Error spans
+===========
+{status=error}
+
+
+Error spans by service
+{resource.service.name="payment" && status=error}
+
+
+
+
+
+                 USER REPORT
+                     │
+                     ▼
+              "Checkout slow"
+                     │
+                     ▼
+            ┌─────────────────┐
+            │ REQUEST RATE    │
+            │ checkout = 8/s  │
+            └────────┬────────┘
+                     │
+                     ▼
+            ┌─────────────────┐
+            │ P95 LATENCY     │
+            │ checkout = 3.2s │
+            └────────┬────────┘
+                     │
+                     ▼
+            ┌─────────────────┐
+            │ ERROR RATE      │
+            │ checkout = 8%   │
+            └────────┬────────┘
+                     │
+                     ▼
+                 LOKI
+                     │
+                     ▼
+             "payment timeout"
+                     │
+                     ▼
+                 TEMPO
+                     │
+                     ▼
+          checkout → payment
+                     │
+                     ▼
+             payment span
+                = 2.9s
+                     │
+                     ▼
+              DB operation
+                = 2.7s
+                     │
+                     ▼
+             POSTGRESQL
+                     │
+                     ▼
+             ROOT CAUSE
+
+
+
+
+              ┌──────────────┐
+              │    METRICS   │
+              └──────┬───────┘
+                     │
+              Identify service
+                     │
+                     ▼
+              ┌──────────────┐
+              │     LOGS     │
+              └──────┬───────┘
+                     │
+              Find error/event
+                     │
+                     ▼
+              ┌──────────────┐
+              │    TRACES    │
+              └──────┬───────┘
+                     │
+             Find slow/error span
+                     │
+                     ▼
+              ┌──────────────┐
+              │ INFRASTRUCTURE│
+              └──────┬───────┘
+                     │
+               Validate cause
+                     │
+                     ▼
+                 RESOLVE
