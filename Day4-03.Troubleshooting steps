@@ -1,0 +1,1385 @@
+When data is missing in Grafana, don't immediately troubleshoot Grafana. The best approach is to trace the telemetry data.
+
+Your architecture is:
+
+Application
+    │
+    │ OTLP
+    ▼
+OpenTelemetry Collector
+    │
+    │ OTLP
+    ▼
+Alloy
+    │
+    ├──────── Metrics ────────► Mimir
+    │
+    ├──────── Logs ───────────► Loki
+    │
+    └──────── Traces ─────────► Tempo
+                                  │
+                                  ▼
+                               Grafana
+
+
+So your troubleshooting path should be:
+
+1. Is application generating telemetry?
+              ↓
+2. Is application/OTel Collector sending telemetry?
+              ↓
+3. Is Alloy receiving telemetry?
+              ↓
+4. Is Alloy successfully exporting it?
+              ↓
+5. Is Mimir/Loki/Tempo receiving it?
+              ↓
+6. Can Grafana query the backend?
+              ↓
+7. Is the Grafana query correct?
+
+# 1. Golden troubleshooting rule
+
+When someone says:
+
+> "I don't see application metrics in Grafana."
+
+Don't start with:
+
+
+❌ Check Grafana
+
+
+Start at the source:
+
+
+Application
+    ↓
+Collector
+    ↓
+Alloy
+    ↓
+Backend
+    ↓
+Grafana
+
+
+The first point where data disappears is usually where the problem is.
+
+---
+
+# 2. Step 1 — Confirm the application is running
+
+First:
+
+bash
+kubectl get pods -n otel-demo
+
+
+You want to see application pods such as:
+
+
+frontend
+checkout
+payment
+cart
+product-catalog
+shipping
+...
+
+
+with:
+
+
+Running
+
+
+Check specifically:
+
+bash
+kubectl get pods -n otel-demo -o wide
+
+
+If the application itself is down, there may be no telemetry to collect.
+
+---
+
+# 3. Step 2 — Generate fresh traffic
+
+This is extremely important.
+
+Don't troubleshoot telemetry using old data.
+
+Generate new application traffic.
+
+For your demo, open the frontend:
+
+
+frontend-external
+
+
+and perform operations such as:
+
+
+Browse product
+Add product to cart
+Checkout
+Payment
+
+
+You can also repeatedly access the application with `curl` if appropriate.
+
+Then immediately check Grafana.
+
+Why?
+
+Because your Alloy scrape interval is:
+
+
+30 seconds
+
+
+and your OTLP pipeline batching is:
+
+
+5 seconds
+
+
+So give the pipeline a little time.
+
+---
+
+# 4. Step 3 — Check the OpenTelemetry Collector
+
+Your application telemetry doesn't necessarily go directly to Alloy.
+
+Your architecture is:
+
+
+OTel Demo application
+        ↓
+OTel Collector
+        ↓
+Alloy
+
+
+So check the collector:
+
+bash
+kubectl get pods -n otel-demo | grep collector
+
+
+You previously have collector pods such as:
+
+
+otel-collector
+otel-collector-agent-xxxxx
+
+
+Check their logs:
+
+bash
+kubectl logs -n otel-demo deployment/otel-collector --tail=200
+
+
+If the collector is a different workload, first find it:
+
+bash
+kubectl get deploy -n otel-demo | grep -i collector
+
+
+---
+
+# 5. What are we looking for in Collector logs?
+
+Look for things like:
+
+
+error
+failed
+export
+timeout
+connection refused
+connection reset
+deadline exceeded
+
+
+For example:
+
+bash
+kubectl logs -n otel-demo deployment/otel-collector --tail=300 \
+  | grep -iE "error|failed|timeout|refused|export"
+
+
+### If you see:
+
+
+connection refused
+
+
+think:
+
+
+Collector → Alloy
+
+
+### If you see:
+
+
+export failed
+
+
+think:
+
+
+Collector exporter
+
+
+### If there are no errors
+
+Move to the next checkpoint.
+
+---
+
+# 6. Step 4 — Check Collector configuration
+
+You need to verify where the Collector is sending telemetry.
+
+Conceptually you want:
+
+
+OTel Collector
+       │
+       │ OTLP
+       ▼
+alloy.alloy.svc.cluster.local:4317
+
+
+Check the Collector configuration:
+
+bash
+kubectl get cm -n otel-demo
+
+
+Then identify the Collector ConfigMap:
+
+bash
+kubectl get cm -n otel-demo | grep -i collector
+
+
+Inspect it:
+
+bash
+kubectl get cm <collector-configmap> -n otel-demo -o yaml
+
+
+Look for:
+
+
+exporters
+
+
+and:
+
+
+service:
+  pipelines:
+
+
+You want to confirm that:
+
+
+metrics → Alloy
+logs    → Alloy
+traces  → Alloy
+
+
+---
+
+# 7. Step 5 — Check Alloy pod
+
+Now move to Alloy.
+
+bash
+kubectl get pods -n alloy
+
+
+You should have:
+
+
+alloy-xxxxx    Running
+
+
+Check:
+
+bash
+kubectl get pods -n alloy -o wide
+
+
+Then:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=300
+
+
+---
+
+# 8. Search Alloy logs for errors
+
+This should become one of your standard troubleshooting commands:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=500 \
+  | grep -iE "error|failed|timeout|refused|duplicate|out.of.order"
+
+
+You're looking for different classes of problems.
+
+---
+
+# 9. Alloy problem — Mimir ingestion
+
+For metrics, you might see:
+
+
+server returned HTTP status 400
+
+
+or:
+
+
+duplicate sample
+
+
+or:
+
+
+out-of-order sample
+
+
+or:
+
+
+429
+
+
+These are **Mimir ingestion problems**, not Grafana problems.
+
+Your path is:
+
+
+Application
+   ↓
+Collector
+   ↓
+Alloy
+   ↓
+Mimir
+      ↑
+    problem
+
+
+---
+
+# 10. Alloy problem — Loki
+
+For logs, look for:
+
+
+loki
+timeout
+connection refused
+exporter
+
+
+For example:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=500 \
+  | grep -iE "loki|otlphttp|error|failed"
+
+
+If you see:
+
+
+connection refused
+
+
+the likely path is:
+
+
+Alloy ─────X────► Loki
+
+
+---
+
+# 11. Alloy problem — Tempo
+
+For traces:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=500 \
+  | grep -iE "tempo|otlp|error|failed"
+
+
+If Tempo is down:
+
+
+Application
+   ↓
+Collector
+   ↓
+Alloy
+   ↓
+Tempo  X
+
+
+Metrics can still work:
+
+
+Application ──► Alloy ──► Mimir
+
+
+and logs can still work:
+
+
+Application ──► Alloy ──► Loki
+
+
+This is an important workshop lesson:
+
+> **Metrics, logs, and traces are separate pipelines. A failure in one backend does not automatically mean the other two are broken.**
+
+---
+
+# 12. Step 6 — Verify Alloy's OTLP receiver
+
+Your Alloy configuration contains:
+
+hcl
+otelcol.receiver.otlp "demo" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+}
+
+
+So Alloy must be listening on:
+
+
+4317 → OTLP gRPC
+4318 → OTLP HTTP
+
+
+Check inside the pod:
+
+bash
+kubectl exec -n alloy deployment/alloy -- \
+  ss -lntp
+
+
+Look for:
+
+
+:4317
+:4318
+
+
+If those ports aren't listening, your OTLP receiver isn't working.
+
+---
+
+# 13. Step 7 — Check Alloy's own telemetry
+
+This is a very powerful troubleshooting technique.
+
+Your Alloy itself exposes internal telemetry.
+
+You have metrics such as:
+
+
+otelcol_receiver_accepted_metric_points_total
+otelcol_receiver_accepted_log_records_total
+otelcol_receiver_accepted_spans_total
+
+
+and:
+
+
+otelcol_exporter_sent_metric_points_total
+otelcol_exporter_sent_log_records_total
+otelcol_exporter_sent_spans_total
+
+
+These tell you whether data is moving through Alloy.
+
+---
+
+# 14. Metrics pipeline checkpoint
+
+For metrics, think:
+
+
+Receiver
+   ↓
+Processor
+   ↓
+Exporter
+
+
+Check:
+
+promql
+otelcol_receiver_accepted_metric_points_total
+
+
+If this is increasing:
+
+
+✅ Alloy is receiving metrics
+
+
+Then check:
+
+promql
+otelcol_exporter_sent_metric_points_total
+
+
+If this is increasing:
+
+
+✅ Alloy is exporting metrics
+
+
+---
+
+# 15. Very useful comparison
+
+You can compare:
+
+
+Accepted metrics
+        vs
+Sent metrics
+
+
+Conceptually:
+
+
+otelcol_receiver_accepted_metric_points_total
+                     │
+                     ▼
+                  Alloy
+                     │
+                     ▼
+otelcol_exporter_sent_metric_points_total
+
+
+If:
+
+
+received = increasing
+sent     = not increasing
+
+
+then the problem is somewhere inside the Alloy processing/export path.
+
+---
+
+# 16. Check failed exports
+
+For metrics:
+
+promql
+otelcol_exporter_send_failed_metric_points_total
+
+
+For logs:
+
+promql
+otelcol_exporter_send_failed_log_records_total
+
+
+For traces:
+
+promql
+otelcol_exporter_send_failed_spans_total
+
+
+If these are increasing:
+
+
+🚨 Alloy is receiving telemetry but failing to export it.
+
+
+---
+
+# 17. Step 8 — Check Mimir directly
+
+This is probably the **most important checkpoint when troubleshooting Grafana metrics**.
+
+Don't use Grafana first.
+
+Query Mimir directly.
+
+Your Mimir endpoint is:
+
+
+http://aac6c2ee1eda240a69d8cf65e72f8041-00da74814338287e.elb.ap-south-1.amazonaws.com
+
+
+For example:
+
+bash
+curl "http://aac6c2ee1eda240a69d8cf65e72f8041-00da74814338287e.elb.ap-south-1.amazonaws.com/prometheus/api/v1/query?query=up"
+
+
+If Mimir returns data:
+
+
+✅ Mimir has data
+
+
+Then your problem may be:
+
+
+Grafana datasource
+
+
+or:
+
+
+Grafana query
+
+
+---
+
+# 18. Query a known application metric
+
+For your application:
+
+bash
+curl "http://aac6c2ee1eda240a69d8cf65e72f8041-00da74814338287e.elb.ap-south-1.amazonaws.com/prometheus/api/v1/query?query=http_server_duration_milliseconds_count"
+
+
+Or use a simpler PromQL query:
+
+
+count(http_server_duration_milliseconds_count)
+
+
+If you get:
+
+
+0
+
+
+then the problem is **before Grafana**.
+
+If you get:
+
+
+100+
+
+
+then Mimir has the data.
+
+---
+
+# 19. Query your specific application
+
+For example:
+
+promql
+count(
+  http_server_duration_milliseconds_count{
+    job="opentelemetry-demo/frontend"
+  }
+)
+
+
+If this returns data:
+
+
+✅ frontend telemetry exists in Mimir
+
+
+Then Grafana should be able to query it.
+
+---
+
+# 20. Check the timestamp
+
+This is an easy problem to miss.
+
+Query:
+
+promql
+max(timestamp(http_server_duration_milliseconds_count))
+
+
+You want to confirm the latest timestamp is recent.
+
+For example:
+
+
+now = 14:30
+latest sample = 14:29:55
+
+
+Good.
+
+But:
+
+
+now = 14:30
+latest sample = 12:00
+
+
+means telemetry is stale.
+
+Then don't waste time changing the Grafana panel.
+
+Investigate:
+
+
+Application
+Collector
+Alloy
+Mimir ingestion
+
+
+---
+
+# 21. Step 9 — Check Grafana datasource
+
+Only after confirming Mimir contains the data should you troubleshoot Grafana.
+
+Go to:
+
+
+Grafana
+→ Connections
+→ Data sources
+→ Mimir
+
+
+Test the datasource.
+
+You want:
+
+
+Data source is working
+
+
+---
+
+# 22. Check the datasource URL
+
+Your Grafana datasource should point to the Mimir query endpoint.
+
+Conceptually:
+
+
+Grafana
+   │
+   ▼
+Mimir Gateway
+   │
+   ▼
+/prometheus/api/v1/query
+
+
+Don't accidentally point Grafana at:
+
+
+/api/v1/push
+
+
+That is the **write endpoint**.
+
+Grafana needs the **query API**.
+
+---
+
+# 23. Step 10 — Test Grafana Explore
+
+Before troubleshooting a dashboard panel, use:
+
+
+Grafana
+   ↓
+Explore
+   ↓
+Mimir
+
+
+Run:
+
+promql
+up
+
+
+Then:
+
+promql
+count(http_server_duration_milliseconds_count)
+
+
+Then:
+
+promql
+http_server_duration_milliseconds_count{
+  job="opentelemetry-demo/frontend"
+}
+
+
+If Explore works but your dashboard doesn't:
+
+> **Your telemetry pipeline is probably fine. The problem is likely the dashboard query, variable, transformation, or time range.**
+
+---
+
+# 24. Step 11 — Check dashboard time range
+
+This sounds simple, but it causes many false incidents.
+
+If the dashboard is set to:
+
+
+Last 24 hours
+
+
+you should still see recent data.
+
+But if it is:
+
+
+Last 5 minutes
+
+
+and the application hasn't received traffic:
+
+
+No data
+
+
+doesn't necessarily mean telemetry is broken.
+
+For troubleshooting, use:
+
+
+Last 15 minutes
+
+
+and generate fresh traffic.
+
+---
+
+# 25. Step 12 — Check the PromQL query
+
+Suppose Mimir contains:
+
+
+http_server_duration_milliseconds_count
+
+
+but your dashboard asks for:
+
+
+http_server_request_duration_seconds_count
+
+
+You'll get:
+
+
+No data
+
+
+even though the pipeline is completely healthy.
+
+This is exactly why we recently checked your actual metric names.
+
+Your environment currently has:
+
+
+http_server_duration_milliseconds_count
+
+
+and:
+
+
+http_status_code
+
+
+So your dashboard should use those actual names.
+
+---
+
+# 26. Step 13 — Check labels
+
+This is another common problem.
+
+Suppose the metric exists:
+
+
+http_server_duration_milliseconds_count
+
+
+but you query:
+
+promql
+{service_name="frontend"}
+
+
+and the metric doesn't have:
+
+
+service_name
+
+
+Then:
+
+
+No data
+
+
+Check the actual labels:
+
+promql
+http_server_duration_milliseconds_count
+
+
+Look at the returned series.
+
+Your current telemetry includes labels such as:
+
+
+job
+http_status_code
+
+
+So this works:
+
+promql
+http_server_duration_milliseconds_count{
+  job="opentelemetry-demo/frontend"
+}
+
+
+but a nonexistent label can eliminate the series.
+
+---
+
+# 27. Step 14 — Check service/job naming
+
+Don't assume service names.
+
+For example:
+
+promql
+count by (job) (
+  http_server_duration_milliseconds_count
+)
+
+
+This tells you what jobs actually exist.
+
+You may discover:
+
+
+opentelemetry-demo/frontend
+opentelemetry-demo/checkout
+opentelemetry-demo/shipping
+...
+
+
+Then use those exact values.
+
+---
+
+# 28. Step 15 — Check metrics vs logs vs traces separately
+
+This is a very important troubleshooting matrix.
+
+| Signal            | Source           | Collector | Alloy        | Backend |
+| ----------------- | ---------------- | --------- | ------------ | ------- |
+| Metrics           | App              | OTLP      | Alloy        | Mimir   |
+| Logs              | App              | OTLP      | Alloy        | Loki    |
+| Traces            | App              | OTLP      | Alloy        | Tempo   |
+| Node metrics      | Node             | —         | Alloy scrape | Mimir   |
+| Container metrics | Kubelet/cAdvisor | —         | Alloy scrape | Mimir   |
+| Host metrics      | Node Exporter    | —         | Alloy scrape | Mimir   |
+
+This lets you quickly narrow the problem.
+
+---
+
+# 29. Example: Metrics missing but logs work
+
+Suppose:
+
+
+Logs     ✅
+Traces   ✅
+Metrics  ❌
+
+
+Don't investigate Loki.
+
+Focus on:
+
+
+Application metrics
+       ↓
+Collector metrics pipeline
+       ↓
+Alloy metrics receiver
+       ↓
+Alloy Prometheus exporter
+       ↓
+Mimir
+
+
+---
+
+# 30. Example: Metrics and logs work but traces don't
+
+Then:
+
+
+Metrics  ✅ → Mimir
+Logs     ✅ → Loki
+Traces   ❌ → Tempo
+
+
+Focus on:
+
+
+OTLP traces
+     ↓
+Alloy
+     ↓
+Tempo
+
+
+Check:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=300 \
+  | grep -i tempo
+
+
+and:
+
+bash
+kubectl get pods -n monitoring | grep tempo
+
+
+---
+
+# 31. Example: Grafana shows no metrics, but Mimir has data
+
+This is a very useful diagnostic case.
+
+
+Application       ✅
+Collector         ✅
+Alloy             ✅
+Mimir             ✅
+Grafana           ❌
+
+
+Now check only:
+
+
+Grafana datasource
+Grafana query
+Grafana variables
+Grafana time range
+Grafana transformations
+
+
+Don't restart Alloy.
+
+Don't restart the application.
+
+Don't reinstall Mimir.
+
+This is the kind of troubleshooting discipline you want to teach your team.
+
+---
+
+# 32. Example: Alloy receives data but Mimir doesn't
+
+Then:
+
+
+Application       ✅
+Collector         ✅
+Alloy receiver    ✅
+Alloy exporter    ❌
+Mimir             ❌
+
+
+Check:
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=500 \
+  | grep -iE "mimir|remote_write|error|failed|429|400"
+
+
+Especially:
+
+
+429
+400
+duplicate sample
+out-of-order
+timeout
+connection refused
+
+
+---
+
+# 33. Example: Application isn't sending anything
+
+Then:
+
+
+Application       ✅
+Collector         ❌
+Alloy             ❌
+Mimir             ❌
+Grafana           ❌
+
+
+Start at:
+
+
+Application
+   ↓
+OTel SDK / instrumentation
+   ↓
+Collector
+
+
+Check the application/collector configuration.
+
+---
+
+# 34. A very useful troubleshooting command set
+
+I recommend giving your workshop participants this cheat sheet.
+
+### Application
+
+bash
+kubectl get pods -n otel-demo
+
+
+### Collector
+
+bash
+kubectl get pods -n otel-demo | grep collector
+
+
+bash
+kubectl logs -n otel-demo deployment/otel-collector --tail=200
+
+
+### Alloy
+
+bash
+kubectl get pods -n alloy
+
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=300
+
+
+### Alloy errors
+
+bash
+kubectl logs -n alloy deployment/alloy --tail=500 \
+  | grep -iE "error|failed|timeout|refused|duplicate|out.of.order"
+
+
+### Mimir
+
+bash
+curl "http://<MIMIR>/prometheus/api/v1/query?query=up"
+
+
+### Known application metric
+
+bash
+curl "http://<MIMIR>/prometheus/api/v1/query?query=count(http_server_duration_milliseconds_count)"
+
+
+### Grafana
+
+
+Explore
+→ Mimir
+→ up
+
+
+Then:
+
+promql
+count(http_server_duration_milliseconds_count)
+
+
+---
+
+# 35. The troubleshooting decision tree
+
+This is the **main slide I recommend for your workshop**:
+
+
+                 DATA NOT VISIBLE IN GRAFANA
+                              │
+                              ▼
+                  Is the application running?
+                       │             │
+                      NO            YES
+                       │             │
+                       ▼             ▼
+                  Fix app       Generate traffic
+                                     │
+                                     ▼
+                         Is Collector receiving?
+                              │          │
+                             NO         YES
+                              │          │
+                              ▼          ▼
+                       Check OTLP      Check Alloy
+                       configuration
+                                         │
+                                         ▼
+                              Is Alloy receiving?
+                                  │          │
+                                 NO         YES
+                                  │          │
+                                  ▼          ▼
+                            Check 4317/4318   Check exporter
+                                             │
+                                             ▼
+                                  Is backend receiving?
+                                      │          │
+                                     NO         YES
+                                      │          │
+                                      ▼          ▼
+                                  Check Mimir/   Check Grafana
+                                  Loki/Tempo     datasource
+                                                   │
+                                                   ▼
+                                             Check PromQL
+                                                   │
+                                                   ▼
+                                             Check labels
+                                                   │
+                                                   ▼
+                                            Check time range
+
+
+---
+
+# 36. Even simpler: the 7 checkpoint method
+
+For your team, I would teach this mnemonic:
+
+
+SOURCE
+   ↓
+SEND
+   ↓
+RECEIVE
+   ↓
+PROCESS
+   ↓
+STORE
+   ↓
+QUERY
+   ↓
+VISUALIZE
+
+
+### 1. SOURCE
+
+Is the application generating telemetry?
+
+### 2. SEND
+
+Is the application/Collector sending it?
+
+### 3. RECEIVE
+
+Is Alloy receiving it?
+
+### 4. PROCESS
+
+Is Alloy processing it without errors?
+
+### 5. STORE
+
+Did Mimir/Loki/Tempo receive it?
+
+### 6. QUERY
+
+Can Grafana query the backend?
+
+### 7. VISUALIZE
+
+Is the dashboard query/variable/time range correct?
+
+---
+
+# 37. The most important troubleshooting principle
+
+When troubleshooting, **never change multiple components at the same time**.
+
+For example, don't do:
+
+
+❌ Restart application
+❌ Restart Alloy
+❌ Restart Mimir
+❌ Change Grafana query
+❌ Change Collector
+
+
+all at once.
+
+You won't know what fixed the problem.
+
+Instead:
+
+
+Application
+   ↓
+verify
+   ↓
+Collector
+   ↓
+verify
+   ↓
+Alloy
+   ↓
+verify
+   ↓
+Backend
+   ↓
+verify
+   ↓
+Grafana
+
+
+**Find the first checkpoint where the data stops.**
+
+That is the most valuable observability troubleshooting skill you can demonstrate in your workshop.
