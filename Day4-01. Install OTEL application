@@ -776,8 +776,8 @@ alloy   ClusterIP   172.20.157.205   <none>        12345/TCP   68s
 kubectl logs -n alloy deployment/alloy --tail=300
 
 
-kubectl logs -n otel-application deployment/otel-collector --tail=200
-kubectl logs -n otel-application deployment/otel-collector --tail=300 \
+kubectl logs -n otel-application ds/otel-collector-agent --tail=200
+kubectl logs -n otel-application ds/otel-collector-agent --tail=300 \
   | grep -iE "error|failed|refused|timeout|export"
 
 Check whether metrics reach to mimir-gateway:
